@@ -1621,12 +1621,61 @@ function VoiceTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
   const [newAnti, setNewAnti] = useState("");
   const [newVocab, setNewVocab] = useState("");
   const [showSkillForm, setShowSkillForm] = useState(false);
+  const [skillImportMode, setSkillImportMode] = useState<"form" | "md">("form");
+  const [mdRaw, setMdRaw] = useState("");
   const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
   const [skillForm, setSkillForm] = useState({
     name: "",
     category: "copy" as AgentSkill["category"],
     instructions: "",
   });
+
+  // Parse a SKILL.md / any markdown file into a skill object
+  const parseMdSkill = (md: string, filename?: string): { name: string; category: AgentSkill["category"]; instructions: string } => {
+    const lines = md.trim().split("\n");
+    // Extract name from first H1/H2 heading or filename
+    let name = "";
+    for (const line of lines) {
+      const m = line.match(/^#{1,2}\s+(.+)/);
+      if (m) { name = m[1].trim(); break; }
+    }
+    if (!name && filename) name = filename.replace(/\.(md|txt)$/i, "").replace(/[-_]/g, " ");
+    if (!name) name = "Skill importada";
+
+    // Detect category from keywords
+    const lower = md.toLowerCase();
+    let category: AgentSkill["category"] = "custom";
+    if (/\bcopy\b|copywrite|headline|cta|aida|pas framework/.test(lower)) category = "copy";
+    else if (/\bdesign\b|visual|paleta|cores|tipografia|layout|composição/.test(lower)) category = "design";
+    else if (/\bstory|narrativa|arco|personagem|storytelling/.test(lower)) category = "storytelling";
+    else if (/\bstrateg|planejamento|posicionamento|funil/.test(lower)) category = "strategy";
+    else if (/\bseo\b|palavra.chave|keyword|ranke/.test(lower)) category = "seo";
+
+    // Use full markdown as instructions
+    return { name, category, instructions: md.trim() };
+  };
+
+  const handleMdFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const parsed = parseMdSkill(text, file.name);
+      setSkillForm(parsed);
+      setMdRaw(text);
+      setSkillImportMode("form"); // show filled form for review
+    };
+    reader.readAsText(file);
+    e.target.value = ""; // reset input
+  };
+
+  const handleMdPaste = () => {
+    if (!mdRaw.trim()) return;
+    const parsed = parseMdSkill(mdRaw);
+    setSkillForm(parsed);
+    setSkillImportMode("form");
+  };
 
   const vp = engine.voiceProfile;
 
@@ -1765,54 +1814,116 @@ function VoiceTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
 
         {/* Add skill form */}
         {showSkillForm && !editingSkillId ? (
-          <div className="bg-[#0a0e17] border border-indigo-500/20 rounded-xl p-3 space-y-2">
-            <p className="text-xs font-semibold text-indigo-400 mb-2">Nova habilidade</p>
-            <input
-              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500 placeholder-slate-600"
-              value={skillForm.name}
-              onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Nome (ex: Copywriter AIDA, Designer Visual, Storyteller)"
-            />
-            <select
-              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500"
-              value={skillForm.category}
-              onChange={(e) => setSkillForm((f) => ({ ...f, category: e.target.value as AgentSkill["category"] }))}
-            >
-              {(["copy", "design", "storytelling", "strategy", "seo", "custom"] as const).map((c) => (
-                <option key={c} value={c}>{c}</option>
+          <div className="bg-[#0a0e17] border border-indigo-500/20 rounded-xl p-3">
+            {/* Mode tabs */}
+            <div className="flex gap-1 bg-[#111827] rounded-lg p-1 mb-3 border border-[#1e293b]">
+              {(["form", "md"] as const).map((m) => (
+                <button key={m} onClick={() => setSkillImportMode(m)}
+                  className={`flex-1 py-1 rounded-md text-xs font-medium transition ${skillImportMode === m ? "bg-[#1e293b] text-white" : "text-slate-500 hover:text-slate-300"}`}>
+                  {m === "form" ? "✏️ Manual" : "📄 Importar .md"}
+                </button>
               ))}
-            </select>
-            <textarea
-              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y min-h-[100px] focus:border-indigo-500 placeholder-slate-600"
-              value={skillForm.instructions}
-              onChange={(e) => setSkillForm((f) => ({ ...f, instructions: e.target.value }))}
-              placeholder={`Instruções detalhadas para o agente usar essa habilidade.\n\nEx para Design: "Sempre especifique paleta de cores dark (azul marinho #0A1628, dourado #C9A84C). Composição minimalista. Tipografia Bold para headlines. Sem stock photos genéricos — prefira abstrações geométricas."`}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  if (!skillForm.name.trim() || !skillForm.instructions.trim()) return;
-                  engine.addSkill({ id: Date.now().toString(), ...skillForm });
-                  setSkillForm({ name: "", category: "copy", instructions: "" });
-                  setShowSkillForm(false);
-                }}
-                className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500 transition"
-              >
-                Adicionar skill
-              </button>
-              <button onClick={() => setShowSkillForm(false)} className="px-3 py-1.5 text-slate-500 text-xs hover:text-white transition">
-                Cancelar
-              </button>
             </div>
+
+            {skillImportMode === "md" ? (
+              /* ── MD import mode ── */
+              <div className="space-y-2">
+                <p className="text-[11px] text-slate-400">Cole o conteúdo de um arquivo <code className="bg-[#111827] px-1 rounded">.md</code> gerado pelo Claude — o nome, categoria e instruções serão extraídos automaticamente.</p>
+
+                {/* File upload */}
+                <label className="flex items-center gap-2 px-3 py-2 bg-[#111827] border border-dashed border-[#334155] rounded-lg text-xs text-slate-400 cursor-pointer hover:border-indigo-500/40 hover:text-white transition">
+                  <span>📎 Upload de arquivo .md</span>
+                  <input type="file" accept=".md,.txt" className="hidden" onChange={handleMdFileUpload} />
+                </label>
+
+                <div className="text-center text-[10px] text-slate-600">— ou —</div>
+
+                <textarea
+                  className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y min-h-[140px] focus:border-indigo-500 font-mono placeholder-slate-600"
+                  value={mdRaw}
+                  onChange={(e) => setMdRaw(e.target.value)}
+                  placeholder={`# Nome da Skill\n\n## Descrição\nO que essa skill faz...\n\n## Instruções\n- Regra 1\n- Regra 2\n\n## Exemplos\n...`}
+                />
+                <div className="flex gap-2">
+                  <button onClick={handleMdPaste} disabled={!mdRaw.trim()}
+                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500 disabled:opacity-40 transition">
+                    Parsear e revisar →
+                  </button>
+                  <button onClick={() => { setShowSkillForm(false); setMdRaw(""); }} className="px-3 py-1.5 text-slate-500 text-xs hover:text-white transition">
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* ── Manual / parsed form ── */
+              <div className="space-y-2">
+                {mdRaw && (
+                  <div className="text-[11px] text-emerald-400 bg-emerald-500/5 border border-emerald-500/20 rounded-lg px-3 py-2">
+                    ✓ Markdown importado — revise os campos abaixo e confirme
+                  </div>
+                )}
+                <input
+                  className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500 placeholder-slate-600"
+                  value={skillForm.name}
+                  onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="Nome (ex: Copywriter AIDA, Designer Visual, Storyteller)"
+                />
+                <select
+                  className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500"
+                  value={skillForm.category}
+                  onChange={(e) => setSkillForm((f) => ({ ...f, category: e.target.value as AgentSkill["category"] }))}
+                >
+                  {(["copy", "design", "storytelling", "strategy", "seo", "custom"] as const).map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <textarea
+                  className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y min-h-[120px] focus:border-indigo-500 placeholder-slate-600"
+                  value={skillForm.instructions}
+                  onChange={(e) => setSkillForm((f) => ({ ...f, instructions: e.target.value }))}
+                  placeholder={`Instruções detalhadas para o agente...\n\nEx: "Use o framework AIDA. Atenção: hook forte. Interesse: dado ou história. Desejo: benefício. Ação: CTA sutil."`}
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      if (!skillForm.name.trim() || !skillForm.instructions.trim()) return;
+                      engine.addSkill({ id: Date.now().toString(), ...skillForm });
+                      setSkillForm({ name: "", category: "copy", instructions: "" });
+                      setMdRaw("");
+                      setShowSkillForm(false);
+                    }}
+                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500 transition"
+                  >
+                    Salvar skill
+                  </button>
+                  {mdRaw && (
+                    <button onClick={() => setSkillImportMode("md")} className="px-3 py-1.5 text-slate-500 text-xs hover:text-slate-300 transition">
+                      ← Editar MD
+                    </button>
+                  )}
+                  <button onClick={() => { setShowSkillForm(false); setMdRaw(""); setSkillForm({ name: "", category: "copy", instructions: "" }); }} className="px-3 py-1.5 text-slate-500 text-xs hover:text-white transition">
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           !editingSkillId && (
-            <button
-              onClick={() => { setSkillForm({ name: "", category: "copy", instructions: "" }); setShowSkillForm(true); }}
-              className="flex items-center gap-2 px-3 py-2 bg-[#111827] border border-dashed border-[#334155] rounded-lg text-xs text-slate-500 hover:text-white hover:border-[#475569] transition w-full"
-            >
-              + Adicionar habilidade
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setSkillForm({ name: "", category: "copy", instructions: "" }); setMdRaw(""); setSkillImportMode("form"); setShowSkillForm(true); }}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-[#111827] border border-dashed border-[#334155] rounded-lg text-xs text-slate-500 hover:text-white hover:border-[#475569] transition"
+              >
+                + Adicionar manualmente
+              </button>
+              <button
+                onClick={() => { setSkillForm({ name: "", category: "copy", instructions: "" }); setMdRaw(""); setSkillImportMode("md"); setShowSkillForm(true); }}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-[#111827] border border-dashed border-indigo-500/20 rounded-lg text-xs text-indigo-400 hover:text-indigo-200 hover:border-indigo-500/40 transition"
+              >
+                📄 Importar .md
+              </button>
+            </div>
           )
         )}
 
