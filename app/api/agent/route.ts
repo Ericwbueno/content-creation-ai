@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
 // Sonnet only for content writing; Haiku for everything else
-const MODEL_HEAVY = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-20241022";
+const MODEL_HEAVY = process.env.ANTHROPIC_MODEL || "claude-3-haiku-20240307";
 const MODEL_LIGHT = "claude-3-haiku-20240307";
 
 function getAnthropic() {

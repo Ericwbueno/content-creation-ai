@@ -324,6 +324,7 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
     setProducingTotal(items.length); setProducedCount(0);
     setLoading(true); setStage(4);
     let failed = 0;
+    let lastError = "";
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       setLoadingMessage(`Escrevendo ${i + 1}/${items.length}: "${item.theme}"...`);
@@ -351,12 +352,13 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         }
       } catch (e: any) {
         console.error(`Erro ao produzir "${item.theme}":`, e.message);
+        lastError = e.message;
         failed++;
       }
     }
     setLoading(false);
     if (failed > 0 && producedCount === 0) {
-      alert(`Erro ao gerar conteúdo. Verifique a chave da API Anthropic e tente novamente.\n\nDetalhes: ${failed} tema(s) falharam.`);
+      alert(`Erro ao gerar conteúdo (${failed} tema(s) falharam).\n\nErro: ${lastError || "desconhecido"}`);
     }
   };
 
