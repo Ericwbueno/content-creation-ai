@@ -223,13 +223,22 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || `Erro ${res.status} ao interpretar a meta.`);
+        return;
+      }
       if (data.plan) {
         setGoalPlan(data.plan);
         savePipeline(data.plan, null);
         setStage(2);
+      } else {
+        alert("Resposta sem plano. Tente de novo.");
       }
-    } catch (err: any) { alert("Erro: " + err.message); }
-    setLoading(false);
+    } catch (err: any) {
+      alert("Erro: " + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ─── STAGE 2: Build Schedule ───
@@ -255,13 +264,20 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         }),
       });
       const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || `Erro ${res.status} ao montar o cronograma.`);
+        return;
+      }
       if (data.schedule) {
         setSchedule(data.schedule);
         savePipeline(goalPlan, data.schedule);
         setStage(3);
       }
-    } catch (err: any) { alert("Erro: " + err.message); }
-    setLoading(false);
+    } catch (err: any) {
+      alert("Erro: " + err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   // ─── STAGE 3→4: Approve theme then produce ───
@@ -296,6 +312,10 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
           }),
         });
         const data = await res.json();
+        if (!res.ok) {
+          alert(data.error || `Erro ao produzir: ${item.theme}`);
+          break;
+        }
         if (data.content) {
           setProducedContent((prev) => ({ ...prev, [item.id]: data.content }));
 
@@ -341,7 +361,11 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         }),
       });
       const data = await res.json();
-      setProgressReport(data.report);
+      if (!res.ok) {
+        alert(data.error || `Erro ${res.status} no relatório de progresso.`);
+      } else {
+        setProgressReport(data.report);
+      }
     } catch (err: any) { alert("Erro: " + err.message); }
     setLoading(false);
   };

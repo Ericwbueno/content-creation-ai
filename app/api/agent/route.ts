@@ -1,7 +1,52 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+
+function getAnthropic() {
+  const key = process.env.ANTHROPIC_API_KEY?.trim();
+  if (!key) return null;
+  return new Anthropic({ apiKey: key });
+}
+
+/** Concatena blocos de texto (ignora tool_use etc.). */
+function concatTextFromContent(content: unknown[]): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (b): b is { type: "text"; text: string } =>
+        typeof b === "object" &&
+        b !== null &&
+        (b as { type?: string }).type === "text" &&
+        typeof (b as { text?: string }).text === "string"
+    )
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/** Parse JSON mesmo quando o modelo envolve em markdown ou texto extra. */
+function parseJsonObject(raw: string): Record<string, unknown> {
+  const stripped = raw.replace(/```json\s*|```/gi, "").trim();
+  const parseObj = (s: string) => {
+    const o = JSON.parse(s);
+    if (typeof o !== "object" || o === null || Array.isArray(o)) {
+      throw new Error("Resposta não é um objeto JSON.");
+    }
+    return o as Record<string, unknown>;
+  };
+  try {
+    return parseObj(stripped);
+  } catch {
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return parseObj(stripped.slice(start, end + 1));
+    }
+  }
+  throw new Error(
+    "O modelo não devolveu JSON válido. Tente de novo ou encurte o texto da meta."
+  );
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -11,9 +56,19 @@ export async function POST(req: NextRequest) {
     // ─── STAGE 1: INTERPRET GOAL ───
     if (action === "interpret_goal") {
       const { goalText, currentMetrics } = body;
+      const client = getAnthropic();
+      if (!client) {
+        return NextResponse.json(
+          {
+            error:
+              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
+          },
+          { status: 503 }
+        );
+      }
 
-      const message = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const message = await client.messages.create({
+        model: MODEL,
         max_tokens: 1000,
         system: `Você é o agente planejador de conteúdo do Eric Bueno.
 Eric é empreendedor, investidor, sócio de fintech de microcrédito. Pilares: AI + Negócios, Ativos Alternativos, Empreendedorismo.
@@ -39,17 +94,42 @@ Responda APENAS JSON (sem markdown):
         messages: [{ role: "user", content: `Meta do Eric: "${goalText}"\n\nMétricas atuais: ${JSON.stringify(currentMetrics || {})}` }],
       });
 
-      const text = message.content[0].type === "text" ? message.content[0].text : "{}";
-      return NextResponse.json({ plan: JSON.parse(text.replace(/```json|```/g, "").trim()) });
+      const text = concatTextFromContent(message.content as unknown[]);
+      if (!text.trim()) {
+        return NextResponse.json(
+          { error: "Resposta vazia do modelo. Verifique o modelo e a API key." },
+          { status: 502 }
+        );
+      }
+      try {
+        const plan = parseJsonObject(text);
+        return NextResponse.json({ plan });
+      } catch (e: any) {
+        return NextResponse.json(
+          { error: e?.message || "JSON inválido na resposta do modelo." },
+          { status: 422 }
+        );
+      }
     }
 
     // ─── STAGE 2: BUILD MONTHLY SCHEDULE ───
     if (action === "build_schedule") {
+      const client = getAnthropic();
+      if (!client) {
+        return NextResponse.json(
+          {
+            error:
+              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
+          },
+          { status: 503 }
+        );
+      }
+
       const { goal, pastPerformance, voiceProfile, month, year } = body;
 
       // Step 1: Research current themes
-      const researchMsg = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const researchMsg = await client.messages.create({
+        model: MODEL,
         max_tokens: 2000,
         tools: [{ type: "web_search_20250305", name: "web_search" } as any],
         messages: [{ role: "user", content: `Pesquise os 15 temas mais relevantes desta semana e tendências do próximo mês para: AI aplicada a negócios e fintechs, ativos alternativos (precatórios, FIDCs, consórcios), empreendedorismo e gestão de fintech. Foque em Brasil e mercado global.` }],
@@ -61,8 +141,8 @@ Responda APENAS JSON (sem markdown):
         .join("\n");
 
       // Step 2: Build schedule using research + past performance + goal
-      const scheduleMsg = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const scheduleMsg = await client.messages.create({
+        model: MODEL,
         max_tokens: 4000,
         system: `Você é o agente planejador de conteúdo do Eric Bueno. Sua missão é criar o cronograma completo do mês.
 
@@ -123,12 +203,15 @@ Responda APENAS JSON (sem markdown):
         }],
       });
 
-      const schedText = scheduleMsg.content[0].type === "text" ? scheduleMsg.content[0].text : "{}";
-      let schedule;
+      const schedText = concatTextFromContent(scheduleMsg.content as unknown[]);
+      let schedule: Record<string, unknown>;
       try {
-        schedule = JSON.parse(schedText.replace(/```json|```/g, "").trim());
+        schedule = parseJsonObject(schedText || "{}");
       } catch {
-        schedule = { schedule: [], strategy_notes: schedText.slice(0, 500) };
+        schedule = {
+          schedule: [],
+          strategy_notes: (schedText || "").slice(0, 500),
+        };
       }
 
       return NextResponse.json({ schedule });
@@ -136,6 +219,17 @@ Responda APENAS JSON (sem markdown):
 
     // ─── STAGE 4: PRODUCE CONTENT FOR APPROVED THEMES ───
     if (action === "produce_content") {
+      const client = getAnthropic();
+      if (!client) {
+        return NextResponse.json(
+          {
+            error:
+              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
+          },
+          { status: 503 }
+        );
+      }
+
       const { theme, channel, format, briefing, voiceProfile, goal } = body;
 
       const voiceRules = voiceProfile?.rules?.length
@@ -157,8 +251,8 @@ Responda APENAS JSON (sem markdown):
         story: "Copy curta para Story. Max 2-3 frases. Pode incluir enquete ou pergunta interativa.",
       };
 
-      const message = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const message = await client.messages.create({
+        model: MODEL,
         max_tokens: 2000,
         system: `Você é o ghostwriter do Eric Bueno. Escreva COMO SE FOSSE O ERIC.
 
@@ -178,16 +272,27 @@ Responda APENAS com o conteúdo. Sem explicações.`,
         }],
       });
 
-      const content = message.content[0].type === "text" ? message.content[0].text : "";
+      const content = concatTextFromContent(message.content as unknown[]);
       return NextResponse.json({ content, format, channel });
     }
 
     // ─── STAGE 6: PROGRESS REPORT ───
     if (action === "progress_report") {
+      const client = getAnthropic();
+      if (!client) {
+        return NextResponse.json(
+          {
+            error:
+              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
+          },
+          { status: 503 }
+        );
+      }
+
       const { goal, publishedPosts, metrics, weekNumber } = body;
 
-      const message = await anthropic.messages.create({
-        model: "claude-sonnet-4-20250514",
+      const message = await client.messages.create({
+        model: MODEL,
         max_tokens: 1500,
         system: `Você é o analista de performance do Eric. Gere um report de progresso comparando com a meta do mês.
 
@@ -209,9 +314,13 @@ Responda em JSON (sem markdown):
         }],
       });
 
-      const text = message.content[0].type === "text" ? message.content[0].text : "{}";
-      let report;
-      try { report = JSON.parse(text.replace(/```json|```/g, "").trim()); } catch { report = { summary: text }; }
+      const text = concatTextFromContent(message.content as unknown[]);
+      let report: Record<string, unknown>;
+      try {
+        report = parseJsonObject(text || "{}");
+      } catch {
+        report = { summary: text || "" };
+      }
       return NextResponse.json({ report });
     }
 
