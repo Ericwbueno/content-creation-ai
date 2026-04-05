@@ -75,19 +75,31 @@ export async function POST(req: NextRequest) {
 
       const msg = await client.messages.create({
         model: MODEL_LIGHT,
-        max_tokens: 800,
-        system: `Você é o planejador do Eric Bueno (empreendedor, fintech, AI, ativos alternativos).
-Interprete a meta em texto livre e retorne APENAS JSON sem markdown:
+        max_tokens: 1000,
+        system: `Você é o planejador de conteúdo digital.
+Interprete a meta do usuário e defina pilares estratégicos BASEADOS NA META — não use categorias genéricas.
+Retorne APENAS JSON sem markdown:
 {
-  "interpreted_goal": "resumo da meta em 1 frase",
-  "kpis": [{ "metric": "nome", "current": 0, "target": 0, "unit": "unidade" }],
-  "strategy": "estratégia em 2 frases",
+  "interpreted_goal": "resumo da meta em 1 frase objetiva",
+  "kpis": [{ "metric": "nome do KPI", "current": 0, "target": 0, "unit": "unidade" }],
+  "strategy": "como o conteúdo vai atingir a meta — 2 frases diretas",
   "content_mix": {
     "linkedin": { "posts_per_week": 3, "formats": ["post","carousel"] },
     "instagram": { "posts_per_week": 1, "formats": ["carousel","reel"] }
   },
-  "pillar_weight": { "ai_business": 0.4, "alternative_assets": 0.3, "entrepreneurship": 0.3 }
-}`,
+  "pillars": [
+    { "key": "pilar_slug_1", "label": "Nome Específico do Pilar 1", "weight": 0.4 },
+    { "key": "pilar_slug_2", "label": "Nome Específico do Pilar 2", "weight": 0.35 },
+    { "key": "pilar_slug_3", "label": "Nome Específico do Pilar 3", "weight": 0.25 }
+  ]
+}
+
+REGRAS DOS PILARES:
+- Gere exatamente 3 pilares derivados da meta do usuário
+- Keys em snake_case sem acentos
+- Labels curtos e específicos (ex: "AI Aplicada a Fintech", "Crédito Privado", "Exits e M&A")
+- NUNCA use categorias genéricas como "Empreendedorismo" ou "Negócios" sem especificidade
+- Os pesos somam 1.0`,
         messages: [{ role: "user", content: `Meta: "${goalText}"\nMétricas atuais: ${JSON.stringify(currentMetrics || {})}` }],
       });
 
@@ -175,12 +187,17 @@ Retorne APENAS JSON sem markdown:
         ? `\nSkills: ${voiceProfile.skills.map((s: any) => s.name).join(", ")}`
         : "";
 
+      const pillarsBlock = goal?.pillars?.length
+        ? goal.pillars.map((p: any) => `- ${p.key}: ${p.label} (peso ${Math.round(p.weight * 100)}%)`).join("\n")
+        : "- ai_business: AI + Negócios\n- alternative_assets: Ativos Alternativos\n- entrepreneurship: Empreendedorismo";
+
       const msg = await client.messages.create({
         model: MODEL_LIGHT,
         max_tokens: 1400,
         system: `Você gera exatamente 3 temas de conteúdo para a Semana ${weekNum} do mês ${month}/${year}.
-Eric Bueno: empreendedor, fintech (Trigo Dourado), investidor, advisor tech. Pilares: AI+Negócios | Ativos Alternativos | Empreendedorismo.
-Meta: ${goal?.interpreted_goal || "Crescer presença digital"}${skillsBlock}
+Meta estratégica: ${goal?.interpreted_goal || "Crescer presença digital"}
+Pilares disponíveis (use os keys exatos no campo "pillar"):
+${pillarsBlock}${skillsBlock}
 
 Tendências da semana:
 ${trendContext}

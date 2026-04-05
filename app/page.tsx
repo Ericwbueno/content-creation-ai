@@ -323,6 +323,7 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
     if (items.length === 0) return;
     setProducingTotal(items.length); setProducedCount(0);
     setLoading(true); setStage(4);
+    let failed = 0;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       setLoadingMessage(`Escrevendo ${i + 1}/${items.length}: "${item.theme}"...`);
@@ -345,10 +346,18 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             visual_type: data.visual_type,
           });
           setProducedCount((n) => n + 1);
+        } else {
+          failed++;
         }
-      } catch {}
+      } catch (e: any) {
+        console.error(`Erro ao produzir "${item.theme}":`, e.message);
+        failed++;
+      }
     }
     setLoading(false);
+    if (failed > 0 && producedCount === 0) {
+      alert(`Erro ao gerar conteúdo. Verifique a chave da API Anthropic e tente novamente.\n\nDetalhes: ${failed} tema(s) falharam.`);
+    }
   };
 
   // ── Progress report ──
@@ -369,6 +378,15 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
   ];
 
   const approvedCount = allThemes.filter((t) => approvedIds.has(t.id)).length;
+
+  // Dynamic pillars from goal plan, fallback to hardcoded
+  const pillarsMap: Record<string, { label: string; color: string }> = (() => {
+    if (!goalPlan?.pillars?.length) return PILLARS;
+    const colors = ["#6366f1", "#059669", "#d97706", "#ec4899", "#06b6d4"];
+    return Object.fromEntries(
+      (goalPlan.pillars as any[]).map((p, i) => [p.key, { label: p.label, color: colors[i % colors.length] }])
+    );
+  })();
 
   return (
     <div className="animate-fade-in">
@@ -469,45 +487,40 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
       {/* ═══ ETAPA 3: TEMAS (3 por semana) ═══ */}
       {stage === 3 && !loading && (
         <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-white">💡 Temas — {approvedCount} aprovados de {allThemes.length}</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white">💡 Temas — {approvedCount} aprovados</h2>
             {approvedCount > 0 && (
               <button onClick={handleProduce} className="px-4 py-2 bg-white text-[#0a0e17] rounded-lg text-xs font-bold hover:bg-slate-200 transition">
-                ✍️ Produzir {approvedCount} →
+                ✍️ Produzir {approvedCount} post{approvedCount > 1 ? "s" : ""} →
               </button>
             )}
           </div>
 
-          {/* Week buttons */}
-          <div className="grid grid-cols-4 gap-2 mb-4">
-            {([1,2,3,4] as const).map((w) => {
-              const weekThemes = allThemes.filter((t) => t.id.startsWith(`w${w}_`));
-              const done = weekThemes.length > 0;
-              const isNext = currentWeek === w - 1;
-              return (
-                <button key={w} onClick={() => handleGenerateWeek(w)}
-                  disabled={!isNext && currentWeek < w - 1}
-                  className={`flex flex-col items-center gap-1 py-3 rounded-xl border text-xs font-medium transition ${done ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : isNext ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20" : "bg-[#0a0e17] border-[#1e293b] text-slate-600 cursor-not-allowed"}`}>
-                  <span>{done ? "✓" : w === 1 ? "🔍" : "💡"}</span>
-                  <span>Sem {w}</span>
-                  {done && <span className="text-[10px] opacity-70">{weekThemes.length} temas</span>}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Theme cards */}
-          {allThemes.length === 0 && (
-            <div className="text-center py-10 bg-[#111827] border border-dashed border-[#1e293b] rounded-xl text-slate-500 text-sm">
-              Clique em "Sem 1" para gerar os primeiros 3 temas
+          {/* Pillars legend */}
+          {goalPlan?.pillars?.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-4">
+              {(goalPlan.pillars as any[]).map((p: any) => (
+                <span key={p.key} className="text-[10px] px-2 py-0.5 rounded-full border" style={{ borderColor: pillarsMap[p.key]?.color + "40", color: pillarsMap[p.key]?.color }}>
+                  {p.label}
+                </span>
+              ))}
             </div>
           )}
 
-          <div className="space-y-2 mb-4">
-            {allThemes.map((item) => {
+          {/* Week sections */}
+          {([1,2,3,4] as const).map((w) => {
+            const weekThemes = allThemes.filter((t) => t.id.startsWith(`w${w}_`));
+            const weekApproved = weekThemes.filter((t) => approvedIds.has(t.id));
+            const weekPending = weekThemes.filter((t) => !approvedIds.has(t.id));
+            const isGenerated = weekThemes.length > 0;
+            const canGenerate = currentWeek === w - 1;
+
+            const ThemeCard = ({ item }: { item: any }) => {
               const approved = approvedIds.has(item.id);
               return (
-                <button key={item.id} onClick={() => setApprovedIds((prev) => { const n = new Set(prev); approved ? n.delete(item.id) : n.add(item.id); return n; })}
+                <button
+                  key={item.id}
+                  onClick={() => setApprovedIds((prev) => { const n = new Set(prev); approved ? n.delete(item.id) : n.add(item.id); return n; })}
                   className={`w-full text-left p-3 rounded-xl border transition ${approved ? "bg-emerald-500/5 border-emerald-500/30" : "bg-[#111827] border-[#1e293b] hover:border-[#334155]"}`}>
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center text-[9px] shrink-0 ${approved ? "border-emerald-500 bg-emerald-500 text-white" : "border-[#334155]"}`}>{approved ? "✓" : ""}</span>
@@ -517,18 +530,67 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
                   </div>
                   <div className="ml-6 flex flex-wrap gap-1.5 items-center mb-1">
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e293b] text-slate-400">{item.format}</span>
-                    <span className="text-[10px]" style={{ color: PILLARS[item.pillar]?.color }}>{PILLARS[item.pillar]?.label}</span>
+                    <span className="text-[10px]" style={{ color: pillarsMap[item.pillar]?.color }}>{pillarsMap[item.pillar]?.label || item.pillar}</span>
                     {item.suggested_date && <span className="text-[10px] text-slate-500">{item.suggested_date} {item.suggested_time}</span>}
                     {item.visual_type && item.visual_type !== "none" && <span className="text-[10px] text-purple-400">{item.visual_type === "video" ? "🎬" : item.visual_type === "carousel" ? "🎠" : "🖼"} {item.visual_type}</span>}
                   </div>
                   {item.angle && <p className="ml-6 text-[11px] text-slate-400 line-clamp-2">{item.angle}</p>}
                 </button>
               );
-            })}
-          </div>
+            };
+
+            return (
+              <div key={w} className="mb-5">
+                {/* Week header */}
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-xs font-semibold ${isGenerated ? "text-white" : "text-slate-500"}`}>Semana {w}</span>
+                  {isGenerated && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400">
+                      {weekApproved.length}/{weekThemes.length} aprovados
+                    </span>
+                  )}
+                  {isGenerated && (
+                    <button onClick={() => handleGenerateWeek(w)} className="ml-auto text-[10px] text-slate-500 hover:text-slate-300 transition">
+                      ↺ Regerar
+                    </button>
+                  )}
+                </div>
+
+                {/* Generate button if not yet generated */}
+                {!isGenerated && (
+                  canGenerate ? (
+                    <button onClick={() => handleGenerateWeek(w)}
+                      className="w-full py-4 border border-dashed border-indigo-500/30 rounded-xl text-indigo-400 text-xs hover:bg-indigo-500/5 transition">
+                      + Gerar 3 temas para Semana {w}
+                    </button>
+                  ) : (
+                    <div className="w-full py-3 border border-dashed border-[#1e293b] rounded-xl text-center text-slate-600 text-xs">
+                      🔒 Gere a Semana {w - 1} primeiro
+                    </div>
+                  )
+                )}
+
+                {/* Approved themes */}
+                {weekApproved.length > 0 && (
+                  <div className="space-y-1.5 mb-2">
+                    <p className="text-[10px] text-emerald-500 uppercase tracking-wider px-1">✓ Aprovados</p>
+                    {weekApproved.map((item) => <ThemeCard key={item.id} item={item} />)}
+                  </div>
+                )}
+
+                {/* Pending themes */}
+                {weekPending.length > 0 && (
+                  <div className="space-y-1.5">
+                    {weekApproved.length > 0 && <p className="text-[10px] text-slate-500 uppercase tracking-wider px-1 mt-2">Pendentes</p>}
+                    {weekPending.map((item) => <ThemeCard key={item.id} item={item} />)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {allThemes.length > 0 && approvedCount === 0 && (
-            <p className="text-center text-xs text-slate-500">Clique nos temas para aprovar, depois em "Produzir"</p>
+            <p className="text-center text-xs text-slate-500 mt-2">Clique nos temas para aprovar, depois em "Produzir"</p>
           )}
         </div>
       )}
