@@ -256,198 +256,83 @@ export default function Home() {
 
 // ===== PIPELINE TAB — 6-Stage Autonomous Agent =====
 function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useContentEngine>; onNavigate: (tab: string) => void }) {
-  // Pipeline state
-  const [stage, setStage] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  // ── State ──
+  const [stage, setStage] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [goalText, setGoalText] = useState("");
   const [goalPlan, setGoalPlan] = useState<any>(null);
-  const [schedule, setSchedule] = useState<any>(null); // { schedule: [...all weeks merged] }
-  const [weekSchedules, setWeekSchedules] = useState<Record<number, any>>({}); // per-week raw data
-  const [currentWeek, setCurrentWeek] = useState(0); // 0 = none done, 1-4 = weeks done
-  const [researchCache, setResearchCache] = useState(""); // reuse research text across weeks
-  const [approvedThemes, setApprovedThemes] = useState<Set<string>>(new Set());
-  const [producedContent, setProducedContent] = useState<Record<string, any>>({});
+  const [timing, setTiming] = useState<any>(null);
+  const [allThemes, setAllThemes] = useState<any[]>([]); // accumulated across weeks
+  const [approvedIds, setApprovedIds] = useState<Set<string>>(new Set());
+  const [currentWeek, setCurrentWeek] = useState(0);
+  const [producedCount, setProducedCount] = useState(0);
+  const [producingTotal, setProducingTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressReport, setProgressReport] = useState<any>(null);
 
-  // Load saved pipeline state
-  const [savedGoal] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("ce-pipeline-goal") || "null"); } catch { return null; }
-  });
-  const [savedSchedule] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("ce-pipeline-schedule") || "null"); } catch { return null; }
-  });
-
-  // Auto-resume pipeline
-  useState(() => {
-    if (savedGoal) { setGoalPlan(savedGoal); setStage(savedSchedule ? 3 : 2); }
-    if (savedSchedule) { setSchedule(savedSchedule); setStage(3); }
-  });
-
-  // Persist pipeline state
-  const savePipeline = (goal: any, sched: any) => {
-    try {
-      if (goal) localStorage.setItem("ce-pipeline-goal", JSON.stringify(goal));
-      if (sched) localStorage.setItem("ce-pipeline-schedule", JSON.stringify(sched));
-    } catch {}
-  };
-
-  // Metrics helper
-  const metrics = (() => {
-    try { return JSON.parse(localStorage.getItem("ce-manual-metrics") || "{}"); } catch { return {}; }
-  })();
-
+  const now = new Date();
+  const metrics = (() => { try { return JSON.parse(localStorage.getItem("ce-manual-metrics") || "{}"); } catch { return {}; } })();
   const published = engine.contentList.filter((c) => c.status === "approved" || c.status === "published");
   const withMetrics = published.filter((c) => metrics[c.id]);
   const totalImpressions = withMetrics.reduce((s, c) => s + (metrics[c.id]?.impressions || 0), 0);
   const avgEngagement = withMetrics.length > 0 ? withMetrics.reduce((s, c) => s + (metrics[c.id]?.engagement_rate || 0), 0) / withMetrics.length : 0;
 
-  // ─── STAGE 1: Define Goal ───
-  const handleInterpretGoal = async () => {
+  const call = async (body: object) => {
+    const res = await fetch("/api/agent", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+    return data;
+  };
+
+  // ── Step 1: Interpret goal ──
+  const handleGoal = async () => {
     if (!goalText.trim()) return;
-    setLoading(true);
-    setLoadingMessage("Interpretando sua meta...");
+    setLoading(true); setLoadingMessage("Interpretando sua meta...");
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "interpret_goal",
-          goalText,
-          currentMetrics: { impressions: totalImpressions, engagement: avgEngagement, posts: published.length },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || `Erro ${res.status} ao interpretar a meta.`);
-        return;
-      }
-      if (data.plan) {
-        setGoalPlan(data.plan);
-        savePipeline(data.plan, null);
-        setStage(2);
-      } else {
-        alert("Resposta sem plano. Tente de novo.");
-      }
-    } catch (err: any) {
-      alert("Erro: " + err.message);
-    } finally {
-      setLoading(false);
-    }
+      const data = await call({ action: "interpret_goal", goalText, currentMetrics: { impressions: totalImpressions, engagement: avgEngagement, posts: published.length } });
+      if (data.plan) { setGoalPlan(data.plan); setStage(2); }
+    } catch (e: any) { alert(e.message); } finally { setLoading(false); }
   };
 
-  // ─── STAGE 2: Build Schedule Week by Week ───
-  const handleBuildWeek = async (week: number) => {
-    setLoading(true);
-    setLoadingMessage(
-      week === 1
-        ? "Semana 1: pesquisando temas e montando pauta... (~30s)"
-        : `Semana ${week}: montando pauta com base na pesquisa já feita...`
-    );
-    const now = new Date();
+  // ── Step 2: Analyze timing ──
+  const handleTiming = async () => {
+    setLoading(true); setLoadingMessage("Analisando melhores horários...");
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "build_schedule",
-          goal: goalPlan,
-          pastPerformance: {
-            totalPosts: published.length,
-            avgEngagement,
-            topPillars: engine.contentList.reduce((acc: any, c) => { acc[c.pillar] = (acc[c.pillar] || 0) + 1; return acc; }, {}),
-          },
-          voiceProfile: engine.voiceProfile,
-          month: now.getMonth() + 1,
-          year: now.getFullYear(),
-          week,
-          researchCache: week > 1 ? researchCache : "",
-        }),
+      const data = await call({ action: "analyze_timing", goal: goalPlan });
+      if (data.timing) { setTiming(data.timing); setStage(3); setCurrentWeek(0); }
+    } catch (e: any) { alert(e.message); } finally { setLoading(false); }
+  };
+
+  // ── Step 3: Generate 3 themes for week N ──
+  const handleGenerateWeek = async (week: number) => {
+    setLoading(true); setLoadingMessage(`Gerando 3 temas para a Semana ${week}... (~15s)`);
+    try {
+      const data = await call({ action: "generate_themes", goal: goalPlan, timing, voiceProfile: engine.voiceProfile, week, month: now.getMonth() + 1, year: now.getFullYear() });
+      const themes: any[] = data.themes || [];
+      setAllThemes((prev) => {
+        const filtered = prev.filter((t) => !t.id.startsWith(`w${week}_`));
+        return [...filtered, ...themes];
       });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || `Erro ${res.status} ao montar a Semana ${week}.`);
-        return;
-      }
-
-      // Save research text for reuse in weeks 2-4
-      if (week === 1 && data.researchText) {
-        setResearchCache(data.researchText);
-      }
-
-      const weekData = data.weekSchedule || {};
-      const newWeekSchedules = { ...weekSchedules, [week]: weekData };
-      setWeekSchedules(newWeekSchedules);
       setCurrentWeek(week);
-
-      // Merge all weeks into a single schedule object
-      const allItems = Object.values(newWeekSchedules).flatMap((w: any) => w.schedule || []);
-      const mergedSchedule = {
-        schedule: allItems,
-        strategy_notes: weekData.focus || "",
-        weeklyData: newWeekSchedules,
-      };
-      setSchedule(mergedSchedule);
-      savePipeline(goalPlan, mergedSchedule);
-
-      if (week >= 4) setStage(3);
-    } catch (err: any) {
-      alert("Erro: " + err.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e: any) { alert(e.message); } finally { setLoading(false); }
   };
 
-  // ─── STAGE 3→4: Approve theme then produce ───
-  const toggleThemeApproval = (id: string) => {
-    setApprovedThemes((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const handleProduceContent = async () => {
-    if (approvedThemes.size === 0) return;
-    setLoading(true);
-    const items = schedule.schedule.filter((s: any) => approvedThemes.has(s.id));
-    let produced = 0;
-
-    for (const item of items) {
-      setLoadingMessage(`Produzindo ${produced + 1}/${items.length}: ${item.theme}...`);
+  // ── Step 4: Produce content for approved themes ──
+  const handleProduce = async () => {
+    const items = allThemes.filter((t) => approvedIds.has(t.id));
+    if (items.length === 0) return;
+    setProducingTotal(items.length); setProducedCount(0);
+    setLoading(true); setStage(4);
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      setLoadingMessage(`Escrevendo ${i + 1}/${items.length}: "${item.theme}"...`);
       try {
-        const res = await fetch("/api/agent", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "produce_content",
-            theme: item.theme,
-            channel: item.channel,
-            format: item.format,
-            briefing: item.briefing,
-            voiceProfile: engine.voiceProfile,
-            goal: goalPlan,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert(data.error || `Erro ao produzir: ${item.theme}`);
-          break;
-        }
+        const data = await call({ action: "produce_content", theme: item.theme, angle: item.angle, briefing: item.briefing, channel: item.channel, format: item.format, voiceProfile: engine.voiceProfile, goal: goalPlan });
         if (data.content) {
-          const richItem = {
-            content: data.content,
-            style_notes: data.style_notes || "",
-            visual_prompt: data.visual_prompt || "",
-            visual_type: data.visual_type || "none",
-          };
-          setProducedContent((prev) => ({ ...prev, [item.id]: richItem }));
-
-          // Add to content list for review
           engine.addContent({
             id: `agent-${item.id}-${Date.now()}`,
             created_at: new Date().toISOString(),
-            scheduled_at: `${item.date}T${item.time || "09:00"}:00`,
+            scheduled_at: item.suggested_date ? `${item.suggested_date}T${item.suggested_time || "09:00"}:00` : new Date().toISOString(),
             channel: item.channel,
             pillar: item.pillar,
             status: "pending_review",
@@ -459,81 +344,48 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             visual_prompt: data.visual_prompt,
             visual_type: data.visual_type,
           });
-          produced++;
+          setProducedCount((n) => n + 1);
         }
       } catch {}
     }
-    setLoadingMessage("");
     setLoading(false);
-    setStage(4);
   };
 
-  // ─── STAGE 6: Progress Report ───
+  // ── Progress report ──
   const handleProgressReport = async () => {
-    setLoading(true);
-    setLoadingMessage("Analisando progresso vs meta...");
+    setLoading(true); setLoadingMessage("Analisando progresso vs meta...");
     try {
-      const res = await fetch("/api/agent", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "progress_report",
-          goal: goalPlan,
-          publishedPosts: published.slice(0, 20).map((p) => ({
-            ...p,
-            metrics: metrics[p.id] || null,
-          })),
-          metrics: { totalImpressions, avgEngagement, totalPosts: published.length },
-          weekNumber: Math.ceil(new Date().getDate() / 7),
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(data.error || `Erro ${res.status} no relatório de progresso.`);
-      } else {
-        setProgressReport(data.report);
-      }
-    } catch (err: any) { alert("Erro: " + err.message); }
-    setLoading(false);
+      const data = await call({ action: "progress_report", goal: goalPlan, publishedPosts: published.slice(0, 10).map((p) => ({ ...p, metrics: metrics[p.id] || null })), metrics: { totalImpressions, avgEngagement, totalPosts: published.length }, weekNumber: Math.ceil(now.getDate() / 7) });
+      if (data.report) setProgressReport(data.report);
+    } catch (e: any) { alert(e.message); } finally { setLoading(false); }
   };
 
-  // ─── STAGE INDICATOR ───
-  const stages = [
+  const STAGES = [
     { n: 1, label: "Meta", icon: "🎯" },
-    { n: 2, label: "Planejar", icon: "🧠" },
-    { n: 3, label: "Pauta", icon: "📋" },
+    { n: 2, label: "Horários", icon: "⏰" },
+    { n: 3, label: "Temas", icon: "💡" },
     { n: 4, label: "Conteúdo", icon: "✍️" },
-    { n: 5, label: "Publicar", icon: "🚀" },
-    { n: 6, label: "Monitor", icon: "📊" },
+    { n: 5, label: "Monitor", icon: "📊" },
   ];
+
+  const approvedCount = allThemes.filter((t) => approvedIds.has(t.id)).length;
 
   return (
     <div className="animate-fade-in">
-      {/* PIPELINE HEADER */}
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold text-white tracking-tight">Pipeline</h1>
         {goalPlan && (
-          <button onClick={() => { setStage(1); setGoalPlan(null); setSchedule(null); setApprovedThemes(new Set()); localStorage.removeItem("ce-pipeline-goal"); localStorage.removeItem("ce-pipeline-schedule"); }}
-            className="text-xs text-slate-500 hover:text-red-400 transition">
-            ↺ Reiniciar
-          </button>
+          <button onClick={() => { setGoalPlan(null); setTiming(null); setAllThemes([]); setApprovedIds(new Set()); setCurrentWeek(0); setStage(1); setProgressReport(null); }}
+            className="text-xs text-slate-500 hover:text-red-400 transition">↺ Reiniciar</button>
         )}
       </div>
 
-      {/* STAGE PROGRESS BAR */}
-      <div className="flex gap-1 mb-6 overflow-x-auto pb-2">
-        {stages.map((s) => (
-          <button
-            key={s.n}
-            onClick={() => { if (s.n <= stage || (s.n === 6 && published.length > 0)) setStage(s.n as any); }}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition border ${
-              stage === s.n
-                ? "bg-white text-[#0a0e17] border-white"
-                : s.n < stage
-                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                : "bg-[#111827] text-slate-500 border-[#1e293b]"
-            }`}
-          >
+      {/* Stage bar */}
+      <div className="flex gap-1 mb-6 overflow-x-auto pb-1">
+        {STAGES.map((s) => (
+          <button key={s.n}
+            onClick={() => { if (s.n <= stage || (s.n === 5 && published.length > 0)) setStage(s.n as any); }}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap border transition ${stage === s.n ? "bg-white text-[#0a0e17] border-white" : s.n < stage ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-[#111827] text-slate-500 border-[#1e293b]"}`}>
             <span>{s.n < stage ? "✓" : s.icon}</span>
             <span className="hidden md:inline">{s.label}</span>
             <span className="md:hidden">{s.n}</span>
@@ -541,70 +393,31 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         ))}
       </div>
 
-      {/* LOADING OVERLAY */}
-      {loading && (
-        <AIWorkingIndicator
-          message={loadingMessage || "AI trabalhando..."}
-          sub={
-            loadingMessage.includes("cronograma")
-              ? "Pesquisando temas + montando pauta da semana"
-              : loadingMessage.includes("Produzindo")
-              ? "Escrevendo como o Eric para cada canal selecionado"
-              : loadingMessage.includes("progresso")
-              ? "Cruzando publicações com as métricas da meta"
-              : "Claude está processando seu pedido"
-          }
-        />
-      )}
+      {/* Loading */}
+      {loading && <AIWorkingIndicator message={loadingMessage || "AI trabalhando..."} sub="Usando Claude Haiku (rápido) ou Sonnet (conteúdo)" />}
 
-      {/* ═══ STAGE 1: DEFINE GOAL ═══ */}
+      {/* ═══ ETAPA 1: META ═══ */}
       {stage === 1 && !loading && (
         <div>
-          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-6">
-            <h2 className="text-lg font-semibold text-white mb-2">🎯 Qual a meta deste mês?</h2>
-            <p className="text-xs text-slate-400 mb-4">Descreva em texto livre. O agente vai interpretar e criar KPIs mensuráveis.</p>
-
-            <textarea
-              className="w-full p-3 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-sm resize-y focus:border-indigo-500 placeholder-slate-600"
-              rows={4}
-              placeholder='Ex: "Quero crescer 30% de seguidores no LinkedIn focando em AI aplicada a fintech, com pelo menos 2 posts virais (>10k impressões)"'
-              value={goalText}
-              onChange={(e) => setGoalText(e.target.value)}
-            />
-
-            {/* Quick suggestions */}
-            <div className="flex flex-wrap gap-2 mt-3">
-              {[
-                "Crescer seguidores LinkedIn em 20%",
-                "Gerar 5 leads qualificados via Instagram",
-                "Posicionar como referência em AI + fintech",
-                "Aumentar engajamento médio pra 5%",
-              ].map((s) => (
-                <button key={s} onClick={() => setGoalText(s)} className="px-2.5 py-1 bg-[#1e293b] text-slate-400 rounded-full text-[10px] hover:text-white transition">
-                  {s}
-                </button>
+          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-5 mb-4">
+            <h2 className="text-base font-semibold text-white mb-1">🎯 Qual é a meta deste mês?</h2>
+            <p className="text-xs text-slate-500 mb-4">Escreva em texto livre — o agente interpreta e cria KPIs.</p>
+            <textarea className="w-full p-3 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-sm resize-y focus:border-indigo-500 placeholder-slate-600" rows={3}
+              placeholder='Ex: "Crescer 30% no LinkedIn com foco em AI aplicada a fintech, 2 posts por semana"'
+              value={goalText} onChange={(e) => setGoalText(e.target.value)} />
+            <div className="flex flex-wrap gap-2 mt-2 mb-4">
+              {["Crescer seguidores LinkedIn 20%", "Posicionar em AI + fintech", "Aumentar engajamento pra 5%"].map((s) => (
+                <button key={s} onClick={() => setGoalText(s)} className="px-2.5 py-1 bg-[#1e293b] text-slate-400 rounded-full text-[10px] hover:text-white transition">{s}</button>
               ))}
             </div>
-
-            <button
-              onClick={handleInterpretGoal}
-              disabled={!goalText.trim()}
-              className="mt-4 w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
-            >
-              ⚡ Definir meta e avançar
+            <button onClick={handleGoal} disabled={!goalText.trim()} className="w-full py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition">
+              ⚡ Interpretar meta →
             </button>
           </div>
-
-          {/* Current stats */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-            {[
-              { n: published.length, l: "Posts", c: "text-white" },
-              { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" },
-              { n: totalImpressions > 1000 ? `${(totalImpressions / 1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" },
-              { n: `v${engine.voiceProfile.version}`, l: "Voice", c: "text-indigo-400" },
-            ].map((s, i) => (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {[{ n: published.length, l: "Posts", c: "text-white" }, { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" }, { n: totalImpressions > 999 ? `${(totalImpressions/1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" }, { n: `v${engine.voiceProfile.version}`, l: "Voice", c: "text-indigo-400" }].map((s, i) => (
               <div key={i} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3 text-center">
-                <div className={`text-lg font-bold tracking-tight ${s.c}`}>{s.n}</div>
+                <div className={`text-lg font-bold ${s.c}`}>{s.n}</div>
                 <div className="text-[10px] text-slate-500 uppercase">{s.l}</div>
               </div>
             ))}
@@ -612,310 +425,180 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
         </div>
       )}
 
-      {/* ═══ STAGE 2: GOAL INTERPRETED → BUILD SCHEDULE ═══ */}
+      {/* ═══ ETAPA 2: HORÁRIOS ═══ */}
       {stage === 2 && !loading && goalPlan && (
         <div>
-          <div className="bg-[#111827] border border-emerald-500/20 rounded-xl p-4 md:p-5 mb-4">
-            <h2 className="text-sm font-semibold text-white mb-2">🧠 Meta interpretada</h2>
-            <p className="text-sm text-slate-300 mb-3">{goalPlan.interpreted_goal}</p>
-
-            {/* KPIs */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
-              {(goalPlan.kpis || []).map((kpi: any, i: number) => (
-                <div key={i} className="bg-[#0a0e17] rounded-lg p-3 text-center">
-                  <div className="text-xs text-slate-400">{kpi.metric}</div>
-                  <div className="text-lg font-bold text-white">{kpi.current} → {kpi.target}</div>
-                  <div className="text-[10px] text-slate-500">{kpi.unit}</div>
-                </div>
+          <div className="bg-[#111827] border border-emerald-500/20 rounded-xl p-4 mb-4">
+            <h2 className="text-sm font-semibold text-white mb-1">✓ Meta definida</h2>
+            <p className="text-sm text-slate-300 mb-2">{goalPlan.interpreted_goal}</p>
+            <div className="flex flex-wrap gap-2">
+              {(goalPlan.kpis || []).map((k: any, i: number) => (
+                <span key={i} className="px-2 py-1 bg-[#0a0e17] rounded-lg text-[11px] text-slate-300">{k.metric}: {k.current}→{k.target} {k.unit}</span>
               ))}
             </div>
+          </div>
 
-            {/* Strategy */}
-            <p className="text-xs text-slate-400 mb-3">📋 {goalPlan.strategy}</p>
-
-            {/* Content mix */}
-            {goalPlan.content_mix && (
-              <div className="flex flex-wrap gap-2 mb-3">
-                {Object.entries(goalPlan.content_mix).map(([ch, mix]: [string, any]) => (
-                  <div key={ch} className="px-3 py-1.5 bg-[#0a0e17] rounded-lg text-xs">
-                    <span>{CHANNELS[ch]?.emoji} </span>
-                    <span className="text-slate-300">{mix.posts_per_week}x/sem</span>
-                    <span className="text-slate-500 ml-1">({mix.formats?.join(", ")})</span>
+          {timing ? (
+            <div className="space-y-3 mb-4">
+              <h2 className="text-sm font-semibold text-white">⏰ Melhores horários identificados</h2>
+              {Object.entries(timing).map(([ch, t]: [string, any]) => (
+                <div key={ch} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span>{CHANNELS[ch]?.emoji}</span>
+                    <span className="text-xs font-semibold text-white">{CHANNELS[ch]?.label || ch}</span>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Week-by-week schedule builder */}
-          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 mb-3">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-              📅 Montar cronograma — semana a semana
-            </h3>
-            <p className="text-[11px] text-slate-500 mb-4">
-              Cada semana é gerada separadamente para não estourar tokens. A pesquisa de temas é feita só na Semana 1 e reutilizada nas demais.
-            </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
-              {([1, 2, 3, 4] as const).map((w) => {
-                const done = currentWeek >= w;
-                const isNext = currentWeek === w - 1;
-                return (
-                  <button
-                    key={w}
-                    onClick={() => handleBuildWeek(w)}
-                    disabled={!isNext && !done}
-                    className={`flex flex-col items-center gap-1 p-3 rounded-xl border text-xs font-medium transition ${
-                      done
-                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-                        : isNext
-                        ? "bg-white text-[#0a0e17] border-white hover:bg-slate-200"
-                        : "bg-[#0a0e17] border-[#1e293b] text-slate-600 cursor-not-allowed"
-                    }`}
-                  >
-                    <span className="text-base">{done ? "✓" : w === 1 ? "🔍" : "📋"}</span>
-                    <span>Semana {w}</span>
-                    {weekSchedules[w] && (
-                      <span className="text-[10px] opacity-70">{(weekSchedules[w].schedule || []).length} posts</span>
-                    )}
-                  </button>
-                );
-              })}
+                  <div className="flex flex-wrap gap-2 mb-1">
+                    {(t.best_days || []).map((d: string) => <span key={d} className="text-[11px] px-2 py-0.5 bg-emerald-500/10 text-emerald-400 rounded-full">{d}</span>)}
+                    {(t.best_times || []).map((h: string) => <span key={h} className="text-[11px] px-2 py-0.5 bg-blue-500/10 text-blue-400 rounded-full">{h}</span>)}
+                  </div>
+                  <p className="text-[11px] text-slate-500">{t.rationale}</p>
+                </div>
+              ))}
+              <button onClick={() => setStage(3)} className="w-full py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold hover:bg-slate-200 transition">
+                ✓ Confirmar horários → Gerar temas
+              </button>
             </div>
-            {currentWeek > 0 && (
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] text-slate-500">
-                  {currentWeek < 4
-                    ? `${(schedule?.schedule || []).length} posts gerados — continue para a Semana ${currentWeek + 1}`
-                    : `✓ Cronograma completo — ${(schedule?.schedule || []).length} posts no mês`}
-                </p>
-                {currentWeek >= 1 && (
-                  <button
-                    onClick={() => setStage(3)}
-                    className="px-3 py-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-xs font-medium hover:bg-indigo-500/20 transition"
-                  >
-                    Revisar pauta →
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+          ) : (
+            <button onClick={handleTiming} className="w-full py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold hover:bg-slate-200 transition">
+              ⏰ Analisar melhores dias e horários
+            </button>
+          )}
         </div>
       )}
 
-      {/* ═══ STAGE 3: APPROVE THEMES ═══ */}
-      {stage === 3 && !loading && schedule && (
+      {/* ═══ ETAPA 3: TEMAS (3 por semana) ═══ */}
+      {stage === 3 && !loading && (
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-white">📋 Pauta do mês — aprove os temas</h2>
-            <span className="text-xs text-slate-500">{approvedThemes.size}/{schedule.schedule?.length || 0} aprovados</span>
+            <h2 className="text-sm font-semibold text-white">💡 Temas — {approvedCount} aprovados de {allThemes.length}</h2>
+            {approvedCount > 0 && (
+              <button onClick={handleProduce} className="px-4 py-2 bg-white text-[#0a0e17] rounded-lg text-xs font-bold hover:bg-slate-200 transition">
+                ✍️ Produzir {approvedCount} →
+              </button>
+            )}
           </div>
 
-          {/* Strategy notes */}
-          {schedule.strategy_notes && (
-            <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3 mb-4 text-xs text-indigo-300">
-              💡 {schedule.strategy_notes}
-            </div>
-          )}
-
-          {/* Weekly breakdown */}
-          {schedule.weekly_breakdown && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
-              {Object.entries(schedule.weekly_breakdown).map(([week, data]: [string, any]) => (
-                <div key={week} className="bg-[#111827] border border-[#1e293b] rounded-lg p-3">
-                  <div className="text-[10px] text-slate-500 uppercase">{week.replace("week", "Sem ")}</div>
-                  <div className="text-xs text-white font-medium mt-1">{data.focus}</div>
-                  <div className="text-[10px] text-slate-500">{data.posts} posts</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Theme list */}
-          <div className="space-y-2 mb-4">
-            {(schedule.schedule || []).map((item: any) => {
-              const isApproved = approvedThemes.has(item.id);
+          {/* Week buttons */}
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {([1,2,3,4] as const).map((w) => {
+              const weekThemes = allThemes.filter((t) => t.id.startsWith(`w${w}_`));
+              const done = weekThemes.length > 0;
+              const isNext = currentWeek === w - 1;
               return (
-                <button
-                  key={item.id}
-                  onClick={() => toggleThemeApproval(item.id)}
-                  className={`w-full text-left p-3 md:p-4 rounded-xl border transition ${
-                    isApproved ? "bg-emerald-500/5 border-emerald-500/20" : "bg-[#111827] border-[#1e293b] hover:border-[#334155]"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] ${
-                      isApproved ? "border-emerald-500 bg-emerald-500 text-white" : "border-[#334155]"
-                    }`}>
-                      {isApproved ? "✓" : ""}
-                    </span>
-                    <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
-                    <span className="text-xs text-white font-medium flex-1">{item.theme}</span>
-                    <span className="text-[10px] text-slate-500">{item.date}</span>
-                  </div>
-                  <div className="ml-7 flex flex-wrap gap-2 items-center">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e293b] text-slate-400">{item.format}</span>
-                    <span className="text-[10px]" style={{ color: PILLARS[item.pillar]?.color }}>{PILLARS[item.pillar]?.label}</span>
-                    {item.time && <span className="text-[10px] text-slate-500">⏰ {item.time}</span>}
-                    {item.is_opportunistic && <span className="text-[10px] text-amber-400">🔥 oportunístico</span>}
-                  </div>
-                  {item.briefing && (
-                    <p className="ml-7 mt-1 text-[11px] text-slate-500">{item.briefing.slice(0, 120)}...</p>
-                  )}
+                <button key={w} onClick={() => handleGenerateWeek(w)}
+                  disabled={!isNext && currentWeek < w - 1}
+                  className={`flex flex-col items-center gap-1 py-3 rounded-xl border text-xs font-medium transition ${done ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : isNext ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/20" : "bg-[#0a0e17] border-[#1e293b] text-slate-600 cursor-not-allowed"}`}>
+                  <span>{done ? "✓" : w === 1 ? "🔍" : "💡"}</span>
+                  <span>Sem {w}</span>
+                  {done && <span className="text-[10px] opacity-70">{weekThemes.length} temas</span>}
                 </button>
               );
             })}
           </div>
 
-          {/* Select all / none */}
-          <div className="flex gap-2 mb-3">
-            <button onClick={() => setApprovedThemes(new Set((schedule.schedule || []).map((s: any) => s.id)))}
-              className="px-3 py-1.5 text-xs text-slate-400 border border-[#334155] rounded-lg hover:text-white transition">
-              Selecionar todos
-            </button>
-            <button onClick={() => setApprovedThemes(new Set())}
-              className="px-3 py-1.5 text-xs text-slate-400 border border-[#334155] rounded-lg hover:text-white transition">
-              Limpar seleção
-            </button>
-          </div>
-
-          <button
-            onClick={handleProduceContent}
-            disabled={approvedThemes.size === 0}
-            className="w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
-          >
-            ✍️ Produzir conteúdo ({approvedThemes.size} temas)
-          </button>
-        </div>
-      )}
-
-      {/* ═══ STAGE 4: CONTENT PRODUCED → REVIEW ═══ */}
-      {stage === 4 && !loading && (
-        <div>
-          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 md:p-5 mb-4 text-center">
-            <div className="text-3xl mb-2">✅</div>
-            <h2 className="text-lg font-semibold text-white mb-2">Conteúdo produzido!</h2>
-            <p className="text-sm text-slate-300 mb-1">{approvedThemes.size} posts gerados e enviados pra revisão.</p>
-            <p className="text-xs text-slate-500">Cada post tem: texto, estilo de postagem e prompt visual para imagem/vídeo.</p>
-          </div>
-
-          {/* Preview of produced items */}
-          {Object.entries(producedContent).length > 0 && (
-            <div className="mb-4 space-y-3">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Preview do que foi gerado</p>
-              {Object.entries(producedContent).slice(0, 3).map(([id, rich]: [string, any]) => (
-                <div key={id} className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
-                  <p className="text-xs text-slate-300 line-clamp-3 mb-2">{rich.content?.slice(0, 200)}…</p>
-                  {rich.style_notes && (
-                    <div className="text-[11px] text-blue-400/80 bg-blue-500/5 rounded-lg p-2 mb-2">
-                      <span className="font-semibold">🎨 Estilo:</span> {rich.style_notes}
-                    </div>
-                  )}
-                  {rich.visual_prompt && rich.visual_prompt !== "N/A" && (
-                    <div className="text-[11px] text-purple-400/80 bg-purple-500/5 rounded-lg p-2">
-                      <span className="font-semibold">🖼 Visual:</span> {rich.visual_prompt?.slice(0, 120)}…
-                    </div>
-                  )}
-                </div>
-              ))}
+          {/* Theme cards */}
+          {allThemes.length === 0 && (
+            <div className="text-center py-10 bg-[#111827] border border-dashed border-[#1e293b] rounded-xl text-slate-500 text-sm">
+              Clique em "Sem 1" para gerar os primeiros 3 temas
             </div>
           )}
 
-          <div className="flex flex-col gap-2">
-            <button onClick={() => onNavigate("review")} className="w-full px-5 py-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-sm font-semibold hover:bg-amber-500/20 transition">
-              ✓ Ir pra Revisão ({engine.pendingReview.length} pendentes)
-            </button>
-            <button onClick={() => onNavigate("calendar")} className="w-full px-5 py-3 bg-[#111827] text-slate-300 border border-[#1e293b] rounded-lg text-sm font-medium hover:border-[#334155] transition">
-              📅 Ver no Cronograma
-            </button>
-            <button onClick={() => setStage(5)} className="w-full px-5 py-3 bg-[#111827] text-slate-400 border border-[#1e293b] rounded-lg text-xs hover:border-[#334155] transition">
-              Pular pra publicação →
-            </button>
+          <div className="space-y-2 mb-4">
+            {allThemes.map((item) => {
+              const approved = approvedIds.has(item.id);
+              return (
+                <button key={item.id} onClick={() => setApprovedIds((prev) => { const n = new Set(prev); approved ? n.delete(item.id) : n.add(item.id); return n; })}
+                  className={`w-full text-left p-3 rounded-xl border transition ${approved ? "bg-emerald-500/5 border-emerald-500/30" : "bg-[#111827] border-[#1e293b] hover:border-[#334155]"}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`w-4 h-4 rounded-full border-2 flex items-center justify-center text-[9px] shrink-0 ${approved ? "border-emerald-500 bg-emerald-500 text-white" : "border-[#334155]"}`}>{approved ? "✓" : ""}</span>
+                    <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
+                    <span className="text-xs text-white font-medium flex-1 text-left">{item.theme}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${item.priority === "high" ? "bg-amber-500/10 text-amber-400" : "bg-[#1e293b] text-slate-500"}`}>{item.priority}</span>
+                  </div>
+                  <div className="ml-6 flex flex-wrap gap-1.5 items-center mb-1">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e293b] text-slate-400">{item.format}</span>
+                    <span className="text-[10px]" style={{ color: PILLARS[item.pillar]?.color }}>{PILLARS[item.pillar]?.label}</span>
+                    {item.suggested_date && <span className="text-[10px] text-slate-500">{item.suggested_date} {item.suggested_time}</span>}
+                    {item.visual_type && item.visual_type !== "none" && <span className="text-[10px] text-purple-400">{item.visual_type === "video" ? "🎬" : item.visual_type === "carousel" ? "🎠" : "🖼"} {item.visual_type}</span>}
+                  </div>
+                  {item.angle && <p className="ml-6 text-[11px] text-slate-400 line-clamp-2">{item.angle}</p>}
+                </button>
+              );
+            })}
           </div>
+
+          {allThemes.length > 0 && approvedCount === 0 && (
+            <p className="text-center text-xs text-slate-500">Clique nos temas para aprovar, depois em "Produzir"</p>
+          )}
         </div>
       )}
 
-      {/* ═══ STAGE 5: PUBLISHING STATUS ═══ */}
-      {stage === 5 && !loading && (
+      {/* ═══ ETAPA 4: PRODUZINDO / CONCLUÍDO ═══ */}
+      {stage === 4 && (
         <div>
-          <h2 className="text-sm font-semibold text-white mb-3">🚀 Status de publicação</h2>
+          {loading ? (
+            <div className="bg-[#111827] border border-indigo-500/20 rounded-xl p-6 text-center mb-4">
+              <AIWorkingIndicator message={loadingMessage} sub={`${producedCount}/${producingTotal} posts escritos — Claude Sonnet em ação`} variant="inline" />
+              <div className="mt-4 h-2 bg-[#1e293b] rounded-full overflow-hidden">
+                <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: producingTotal > 0 ? `${(producedCount/producingTotal)*100}%` : "0%" }} />
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-5 mb-4 text-center">
+                <div className="text-3xl mb-2">✅</div>
+                <h2 className="text-base font-semibold text-white mb-1">{producedCount} posts criados e enviados pra revisão!</h2>
+                <p className="text-xs text-slate-500">Cada post tem: texto + estilo de postagem + prompt visual (imagem/vídeo)</p>
+              </div>
+              <div className="flex flex-col gap-2 mb-4">
+                <button onClick={() => onNavigate("review")} className="w-full py-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-sm font-semibold hover:bg-amber-500/20 transition">
+                  ✓ Revisar e aprovar ({engine.pendingReview.length} pendentes)
+                </button>
+                <button onClick={() => onNavigate("calendar")} className="w-full py-3 bg-[#111827] text-slate-300 border border-[#1e293b] rounded-lg text-sm hover:border-[#334155] transition">
+                  📅 Ver no Cronograma
+                </button>
+                <button onClick={() => setStage(3)} className="w-full py-3 bg-[#111827] text-slate-500 border border-[#1e293b] rounded-lg text-xs hover:border-[#334155] transition">
+                  ← Gerar mais temas
+                </button>
+              </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-            <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-              <div className="text-2xl font-bold text-emerald-400">{engine.contentList.filter((c) => c.status === "approved").length}</div>
-              <div className="text-[10px] text-slate-500 uppercase">Prontos pra postar</div>
-            </div>
-            <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-              <div className="text-2xl font-bold text-purple-400">{engine.contentList.filter((c) => c.status === "published").length}</div>
-              <div className="text-[10px] text-slate-500 uppercase">Publicados</div>
-            </div>
-            <div className="bg-[#111827] border border-amber-500/10 rounded-xl p-4 text-center">
-              <div className="text-2xl font-bold text-amber-400">{engine.pendingReview.length}</div>
-              <div className="text-[10px] text-slate-500 uppercase">Aguardando revisão</div>
-            </div>
-          </div>
-
-          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 mb-4">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Fila de publicação</h3>
-            {engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at).length === 0 ? (
-              <p className="text-xs text-slate-500">Nenhum post aprovado com data agendada. Aprove posts na Revisão.</p>
-            ) : (
-              engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at)
-                .sort((a, b) => (a.scheduled_at || "").localeCompare(b.scheduled_at || ""))
-                .slice(0, 10)
-                .map((item) => (
+              {/* Fila de publicação */}
+              <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 mb-3">
+                <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">🚀 Fila de publicação</h3>
+                {engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at).length === 0 ? (
+                  <p className="text-xs text-slate-500">Nenhum post aprovado agendado. Aprove na aba Revisar.</p>
+                ) : engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at)
+                    .sort((a, b) => (a.scheduled_at||"").localeCompare(b.scheduled_at||""))
+                    .slice(0, 8).map((item) => (
                   <div key={item.id} className="flex items-center gap-2 py-2 border-b border-[#1e293b] last:border-0">
                     <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
-                    <span className="text-xs text-slate-300 flex-1 truncate">{item.body?.slice(0, 60)}...</span>
-                    <span className="text-[10px] text-slate-500">{item.scheduled_at ? new Date(item.scheduled_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "sem data"}</span>
+                    <span className="text-xs text-slate-300 flex-1 truncate">{item.body?.slice(0, 55)}...</span>
+                    <span className="text-[10px] text-slate-500">{item.scheduled_at ? new Date(item.scheduled_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}</span>
                     <span className="text-[10px] text-emerald-400">pronto</span>
                   </div>
-                ))
-            )}
-          </div>
-
-          <p className="text-xs text-slate-500 text-center mb-4">
-            ⚡ O cron roda a cada 15 minutos e publica automaticamente posts aprovados no horário agendado.
-          </p>
-
-          <button onClick={() => setStage(6)} className="w-full px-5 py-3 bg-[#111827] text-slate-300 border border-[#1e293b] rounded-lg text-sm font-medium hover:border-[#334155] transition">
-            📊 Ver progresso vs meta →
-          </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* ═══ STAGE 6: MONITORING & REPORT ═══ */}
-      {stage === 6 && !loading && (
+      {/* ═══ ETAPA 5: MONITOR ═══ */}
+      {stage === 5 && !loading && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-white">📊 Progresso vs Meta</h2>
-            <button onClick={handleProgressReport} className="px-3 py-1.5 bg-white text-[#0a0e17] rounded-lg text-xs font-semibold hover:bg-slate-200 transition">
-              🔄 Atualizar relatório
-            </button>
+            <button onClick={handleProgressReport} className="px-3 py-1.5 bg-white text-[#0a0e17] rounded-lg text-xs font-semibold hover:bg-slate-200 transition">🔄 Atualizar</button>
           </div>
-
-          {/* Goal reminder */}
-          {goalPlan && (
-            <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3 mb-4 text-xs text-indigo-300">
-              🎯 <strong>Meta:</strong> {goalPlan.interpreted_goal}
-            </div>
-          )}
-
-          {/* Current metrics */}
+          {goalPlan && <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3 mb-4 text-xs text-indigo-300">🎯 {goalPlan.interpreted_goal}</div>}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
-            {[
-              { n: published.length, l: "Publicados", c: "text-white" },
-              { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" },
-              { n: totalImpressions > 1000 ? `${(totalImpressions / 1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" },
-              { n: engine.pendingReview.length, l: "Pendentes", c: "text-amber-400" },
-            ].map((s, i) => (
+            {[{ n: published.length, l: "Publicados", c: "text-white" }, { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" }, { n: totalImpressions > 999 ? `${(totalImpressions/1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" }, { n: engine.pendingReview.length, l: "Pendentes", c: "text-amber-400" }].map((s, i) => (
               <div key={i} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3 text-center">
-                <div className={`text-lg font-bold tracking-tight ${s.c}`}>{s.n}</div>
+                <div className={`text-lg font-bold ${s.c}`}>{s.n}</div>
                 <div className="text-[10px] text-slate-500 uppercase">{s.l}</div>
               </div>
             ))}
           </div>
-
-          {/* AI Report */}
           {progressReport ? (
             <div className="space-y-3">
               <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
@@ -924,66 +607,52 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
                   <div className="mt-2 flex items-center gap-2">
                     <span className="text-[10px] text-slate-500">Confiança:</span>
                     <div className="flex-1 h-1.5 bg-[#1e293b] rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all" style={{ width: `${progressReport.confidence_score * 100}%`, background: progressReport.confidence_score > 0.7 ? "#10b981" : progressReport.confidence_score > 0.4 ? "#f59e0b" : "#ef4444" }} />
+                      <div className="h-full rounded-full" style={{ width: `${progressReport.confidence_score*100}%`, background: progressReport.confidence_score > 0.7 ? "#10b981" : progressReport.confidence_score > 0.4 ? "#f59e0b" : "#ef4444" }} />
                     </div>
-                    <span className="text-[10px] text-slate-400">{Math.round(progressReport.confidence_score * 100)}%</span>
+                    <span className="text-[10px] text-slate-400">{Math.round(progressReport.confidence_score*100)}%</span>
                   </div>
                 )}
               </div>
-
-              {/* KPI progress */}
               {progressReport.goal_progress?.length > 0 && (
                 <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
-                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Progresso dos KPIs</h3>
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase mb-3">KPIs</h3>
                   {progressReport.goal_progress.map((kpi: any, i: number) => (
                     <div key={i} className="mb-3 last:mb-0">
                       <div className="flex justify-between text-xs mb-1">
                         <span className="text-slate-300">{kpi.kpi}</span>
-                        <span className={kpi.on_track ? "text-emerald-400" : "text-amber-400"}>
-                          {kpi.current}/{kpi.target} ({kpi.pct}%)
-                        </span>
+                        <span className={kpi.on_track ? "text-emerald-400" : "text-amber-400"}>{kpi.current}/{kpi.target} ({kpi.pct}%)</span>
                       </div>
-                      <div className="h-2 bg-[#1e293b] rounded-full overflow-hidden">
-                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(kpi.pct, 100)}%`, background: kpi.on_track ? "#10b981" : "#f59e0b" }} />
+                      <div className="h-1.5 bg-[#1e293b] rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(kpi.pct,100)}%`, background: kpi.on_track ? "#10b981" : "#f59e0b" }} />
                       </div>
                     </div>
                   ))}
                 </div>
               )}
-
-              {/* What worked / adjust */}
-              {(progressReport.what_worked?.length > 0 || progressReport.what_to_adjust?.length > 0) && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {progressReport.what_worked?.length > 0 && (
-                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
-                      <h3 className="text-xs font-semibold text-emerald-400 mb-2">✅ O que funcionou</h3>
-                      {progressReport.what_worked.map((w: string, i: number) => (
-                        <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>
-                      ))}
-                    </div>
-                  )}
-                  {progressReport.what_to_adjust?.length > 0 && (
-                    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
-                      <h3 className="text-xs font-semibold text-amber-400 mb-2">⚠️ Ajustar</h3>
-                      {progressReport.what_to_adjust.map((w: string, i: number) => (
-                        <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Next week focus */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {progressReport.what_worked?.length > 0 && (
+                  <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+                    <h3 className="text-xs font-semibold text-emerald-400 mb-2">✅ Funcionou</h3>
+                    {progressReport.what_worked.map((w: string, i: number) => <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>)}
+                  </div>
+                )}
+                {progressReport.what_to_adjust?.length > 0 && (
+                  <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+                    <h3 className="text-xs font-semibold text-amber-400 mb-2">⚠️ Ajustar</h3>
+                    {progressReport.what_to_adjust.map((w: string, i: number) => <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>)}
+                  </div>
+                )}
+              </div>
               {progressReport.next_week_focus && (
                 <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-                  <span className="text-[10px] text-slate-500 uppercase">Foco da próxima semana</span>
+                  <span className="text-[10px] text-slate-500 uppercase">Foco próxima semana</span>
                   <p className="text-sm text-white mt-1">{progressReport.next_week_focus}</p>
                 </div>
               )}
             </div>
           ) : (
             <div className="text-center py-8 bg-[#111827] border border-dashed border-[#1e293b] rounded-xl">
-              <p className="text-sm text-slate-500 mb-3">Clique em "Atualizar relatório" pra ver o progresso vs meta.</p>
+              <p className="text-sm text-slate-500">Clique em "Atualizar" para ver o progresso vs meta.</p>
             </div>
           )}
         </div>

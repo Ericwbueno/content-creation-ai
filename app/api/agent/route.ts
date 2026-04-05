@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
-const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+// Sonnet only for content writing; Haiku for everything else
+const MODEL_HEAVY = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const MODEL_LIGHT = "claude-haiku-3-5-20241022";
 
 function getAnthropic() {
   const key = process.env.ANTHROPIC_API_KEY?.trim();
@@ -9,43 +11,36 @@ function getAnthropic() {
   return new Anthropic({ apiKey: key });
 }
 
-/** Concatena blocos de texto (ignora tool_use etc.). */
-function concatTextFromContent(content: unknown[]): string {
+function noKey() {
+  return NextResponse.json(
+    { error: "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables." },
+    { status: 503 }
+  );
+}
+
+function concatText(content: unknown[]): string {
   if (!Array.isArray(content)) return "";
   return content
     .filter(
       (b): b is { type: "text"; text: string } =>
-        typeof b === "object" &&
-        b !== null &&
-        (b as { type?: string }).type === "text" &&
-        typeof (b as { text?: string }).text === "string"
+        typeof b === "object" && b !== null &&
+        (b as any).type === "text" && typeof (b as any).text === "string"
     )
     .map((b) => b.text)
     .join("\n");
 }
 
-/** Parse JSON mesmo quando o modelo envolve em markdown ou texto extra. */
-function parseJsonObject(raw: string): Record<string, unknown> {
-  const stripped = raw.replace(/```json\s*|```/gi, "").trim();
-  const parseObj = (s: string) => {
-    const o = JSON.parse(s);
-    if (typeof o !== "object" || o === null || Array.isArray(o)) {
-      throw new Error("Resposta não é um objeto JSON.");
-    }
+function parseJson(raw: string): Record<string, unknown> {
+  const s = raw.replace(/```json\s*|```/gi, "").trim();
+  const tryParse = (str: string) => {
+    const o = JSON.parse(str);
+    if (typeof o !== "object" || o === null || Array.isArray(o)) throw new Error("not object");
     return o as Record<string, unknown>;
   };
-  try {
-    return parseObj(stripped);
-  } catch {
-    const start = stripped.indexOf("{");
-    const end = stripped.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      return parseObj(stripped.slice(start, end + 1));
-    }
-  }
-  throw new Error(
-    "O modelo não devolveu JSON válido. Tente de novo ou encurte o texto da meta."
-  );
+  try { return tryParse(s); } catch {}
+  const start = s.indexOf("{"), end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) return tryParse(s.slice(start, end + 1));
+  throw new Error("JSON inválido na resposta do modelo. Tente novamente.");
 }
 
 export async function POST(req: NextRequest) {
@@ -53,204 +48,194 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { action } = body;
 
-    // ─── STAGE 1: INTERPRET GOAL ───
+    // ─── 1. INTERPRET GOAL (Haiku — leve) ───
     if (action === "interpret_goal") {
-      const { goalText, currentMetrics } = body;
       const client = getAnthropic();
-      if (!client) {
-        return NextResponse.json(
-          {
-            error:
-              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
-          },
-          { status: 503 }
-        );
-      }
+      if (!client) return noKey();
 
-      const message = await client.messages.create({
-        model: MODEL,
-        max_tokens: 1000,
-        system: `Você é o agente planejador de conteúdo do Eric Bueno.
-Eric é empreendedor, investidor, sócio de fintech de microcrédito. Pilares: AI + Negócios, Ativos Alternativos, Empreendedorismo.
+      const { goalText, currentMetrics } = body;
 
-O Eric vai te dar uma meta em texto livre. Interprete e transforme em KPIs mensuráveis.
-
-Responda APENAS JSON (sem markdown):
+      const msg = await client.messages.create({
+        model: MODEL_LIGHT,
+        max_tokens: 800,
+        system: `Você é o planejador do Eric Bueno (empreendedor, fintech, AI, ativos alternativos).
+Interprete a meta em texto livre e retorne APENAS JSON sem markdown:
 {
-  "interpreted_goal": "o que você entendeu",
-  "kpis": [
-    { "metric": "nome da métrica", "current": 0, "target": 0, "unit": "unidade" }
-  ],
-  "strategy": "estratégia em 2-3 frases",
+  "interpreted_goal": "resumo da meta em 1 frase",
+  "kpis": [{ "metric": "nome", "current": 0, "target": 0, "unit": "unidade" }],
+  "strategy": "estratégia em 2 frases",
   "content_mix": {
-    "linkedin": { "posts_per_week": 0, "formats": ["post", "carousel", "article"] },
-    "twitter": { "posts_per_week": 0, "formats": ["tweet", "thread"] },
-    "instagram": { "posts_per_week": 0, "formats": ["carousel", "reel", "story"] }
+    "linkedin": { "posts_per_week": 3, "formats": ["post","carousel"] },
+    "instagram": { "posts_per_week": 1, "formats": ["carousel","reel"] }
   },
-  "pillar_weight": { "ai_business": 0.4, "alternative_assets": 0.3, "entrepreneurship": 0.3 },
-  "tone_adjustments": ["ajuste de tom sugerido"],
-  "risks": ["risco ou ressalva"]
+  "pillar_weight": { "ai_business": 0.4, "alternative_assets": 0.3, "entrepreneurship": 0.3 }
 }`,
-        messages: [{ role: "user", content: `Meta do Eric: "${goalText}"\n\nMétricas atuais: ${JSON.stringify(currentMetrics || {})}` }],
+        messages: [{ role: "user", content: `Meta: "${goalText}"\nMétricas atuais: ${JSON.stringify(currentMetrics || {})}` }],
       });
 
-      const text = concatTextFromContent(message.content as unknown[]);
-      if (!text.trim()) {
-        return NextResponse.json(
-          { error: "Resposta vazia do modelo. Verifique o modelo e a API key." },
-          { status: 502 }
-        );
-      }
+      const text = concatText(msg.content as unknown[]);
       try {
-        const plan = parseJsonObject(text);
-        return NextResponse.json({ plan });
+        return NextResponse.json({ plan: parseJson(text) });
       } catch (e: any) {
-        return NextResponse.json(
-          { error: e?.message || "JSON inválido na resposta do modelo." },
-          { status: 422 }
-        );
+        return NextResponse.json({ error: e.message }, { status: 422 });
       }
     }
 
-    // ─── STAGE 2: BUILD WEEKLY SCHEDULE (week 1-4) ───
-    if (action === "build_schedule") {
+    // ─── 2. ANALYZE TIMING (Haiku — mínimo) ───
+    if (action === "analyze_timing") {
       const client = getAnthropic();
-      if (!client) {
-        return NextResponse.json(
-          { error: "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local)." },
-          { status: 503 }
-        );
-      }
+      if (!client) return noKey();
 
-      const { goal, pastPerformance, voiceProfile, month, year, week, researchCache } = body;
-      // week: 1 | 2 | 3 | 4
+      const { goal } = body;
+
+      const msg = await client.messages.create({
+        model: MODEL_LIGHT,
+        max_tokens: 500,
+        system: `Você é especialista em distribuição de conteúdo no LinkedIn e Instagram para o mercado brasileiro de tech/fintech/investimentos.
+Retorne APENAS JSON sem markdown:
+{
+  "linkedin": {
+    "best_days": ["Terça","Quarta","Quinta"],
+    "best_times": ["08:00","12:00","18:00"],
+    "avoid": ["Segunda de manhã","Sexta à tarde","Fim de semana"],
+    "rationale": "explicação em 1 frase"
+  },
+  "instagram": {
+    "best_days": ["Terça","Quarta","Quinta"],
+    "best_times": ["12:00","19:00"],
+    "avoid": [],
+    "rationale": "explicação em 1 frase"
+  },
+  "twitter": {
+    "best_days": ["Segunda","Terça","Quarta","Quinta","Sexta"],
+    "best_times": ["08:00","12:00","18:00","21:00"],
+    "avoid": [],
+    "rationale": "explicação em 1 frase"
+  }
+}`,
+        messages: [{ role: "user", content: `Meta: ${goal?.interpreted_goal || "Crescer no LinkedIn"}\nCanais: ${Object.keys(goal?.content_mix || { linkedin: true }).join(", ")}` }],
+      });
+
+      const text = concatText(msg.content as unknown[]);
+      try {
+        return NextResponse.json({ timing: parseJson(text) });
+      } catch (e: any) {
+        return NextResponse.json({ error: e.message }, { status: 422 });
+      }
+    }
+
+    // ─── 3. GENERATE THEMES — 3 por semana (Haiku + web search opcional) ───
+    if (action === "generate_themes") {
+      const client = getAnthropic();
+      if (!client) return noKey();
+
+      const { goal, timing, voiceProfile, week, month, year } = body;
       const weekNum = Number(week) || 1;
 
-      // Calculate date range for this week
-      const firstDay = new Date(year, month - 1, 1);
-      const weekStart = new Date(firstDay);
-      weekStart.setDate(1 + (weekNum - 1) * 7);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekStart.getDate() + 6);
-      const fmt = (d: Date) => d.toISOString().slice(0, 10);
-      const dateRange = `${fmt(weekStart)} a ${fmt(weekEnd)}`;
-
-      // Only research on week 1 (or if no cache provided)
-      let researchText = researchCache || "";
-      if (weekNum === 1 || !researchText) {
-        const researchMsg = await client.messages.create({
-          model: MODEL,
-          max_tokens: 1500,
-          tools: [{ type: "web_search_20250305", name: "web_search" } as any],
-          messages: [{ role: "user", content: `Pesquise os 10 temas mais relevantes desta semana para: AI aplicada a negócios, ativos alternativos (precatórios, FIDCs, consórcios), empreendedorismo em fintech. Foco Brasil e mercado global. Semana de ${dateRange}.` }],
-        } as any);
-        researchText = researchMsg.content
+      // Quick web search for current trends
+      let trendContext = "";
+      try {
+        const searchMsg = await (client.messages.create as any)({
+          model: MODEL_LIGHT,
+          max_tokens: 600,
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+          messages: [{
+            role: "user",
+            content: `Busque em 1 pesquisa: principais notícias e tendências desta semana em AI aplicada a negócios, fintechs brasileiras e ativos alternativos. Seja conciso.`,
+          }],
+        });
+        trendContext = searchMsg.content
           .filter((b: any) => b.type === "text")
           .map((b: any) => b.text)
-          .join("\n");
+          .join("\n")
+          .slice(0, 800);
+      } catch {
+        trendContext = "Pesquisa indisponível — use contexto geral do mercado.";
       }
 
       const skillsBlock = voiceProfile?.skills?.length
-        ? `\nSKILLS ATIVOS DO AGENTE:\n${voiceProfile.skills.map((s: any) => `- ${s.name}: ${s.instructions}`).join("\n")}`
+        ? `\nSkills: ${voiceProfile.skills.map((s: any) => s.name).join(", ")}`
         : "";
 
-      const scheduleMsg = await client.messages.create({
-        model: MODEL,
-        max_tokens: 2000,
-        system: `Você é o agente planejador de conteúdo do Eric Bueno.
+      const msg = await client.messages.create({
+        model: MODEL_LIGHT,
+        max_tokens: 800,
+        system: `Você gera exatamente 3 temas de conteúdo para a Semana ${weekNum} do mês ${month}/${year}.
+Eric Bueno: empreendedor, fintech (Trigo Dourado), investidor, advisor tech. Pilares: AI+Negócios | Ativos Alternativos | Empreendedorismo.
+Meta: ${goal?.interpreted_goal || "Crescer presença digital"}${skillsBlock}
 
-CONTEXTO:
-Empreendedor, investidor, sócio de fintech (Trigo Dourado). Pilares: AI + Negócios | Ativos Alternativos | Empreendedorismo/Gestão
-
-META: ${JSON.stringify(goal)}
-PERFORMANCE PASSADA: ${JSON.stringify(pastPerformance || {})}
-VOICE PROFILE v${voiceProfile?.version || 0}: regras=${JSON.stringify(voiceProfile?.rules || [])}${skillsBlock}
-
-PESQUISA DA SEMANA:
-${researchText}
+Tendências da semana:
+${trendContext}
 
 REGRAS:
-- LinkedIn: terça a quinta, 8h-10h ou 17h-19h
-- Instagram: terça/quarta/quinta, 12h ou 18h-20h
-- Twitter: qualquer dia
-- Varie formatos (post, carousel, thread, reel, story)
-- Um post pode ser "oportunístico" sem tema fixo
-- Distribua datas APENAS dentro do intervalo: ${dateRange}
-- IMPORTANTE: gere APENAS os posts da Semana ${weekNum}
+- Exatamente 3 temas diferentes (1 por pilar preferencialmente)
+- Cada tema deve ter ângulo específico e prático, não genérico
+- Atribuir canal, formato e melhor data/horário baseado no timing fornecido
+- Formato pode ser: post, carousel, thread, reel, story
 
-Responda APENAS JSON sem markdown:
+Retorne APENAS JSON sem markdown:
 {
   "week": ${weekNum},
-  "date_range": "${dateRange}",
-  "focus": "foco temático desta semana em 1 frase",
-  "schedule": [
+  "themes": [
     {
       "id": "w${weekNum}_1",
-      "date": "YYYY-MM-DD",
-      "time": "HH:MM",
-      "channel": "linkedin|twitter|instagram",
-      "pillar": "ai_business|alternative_assets|entrepreneurship",
-      "format": "post|carousel|thread|reel|story",
-      "theme": "título curto",
-      "briefing": "o que abordar, ângulo, gancho sugerido",
-      "source_context": "origem da ideia",
-      "priority": "high|medium|low",
-      "is_opportunistic": false
+      "theme": "título curto e direto",
+      "angle": "ângulo específico — o que torna esse tema único e relevante agora",
+      "briefing": "o que abordar em 2-3 frases: ponto central, dado ou história de apoio, fechamento",
+      "channel": "linkedin",
+      "format": "post",
+      "pillar": "ai_business",
+      "suggested_date": "YYYY-MM-DD",
+      "suggested_time": "HH:MM",
+      "visual_type": "none|image|video|carousel",
+      "priority": "high|medium"
     }
   ]
 }`,
-        messages: [{
-          role: "user",
-          content: `Crie o plano da Semana ${weekNum} (${dateRange}) para ${month}/${year}.`,
-        }],
+        messages: [{ role: "user", content: `Gere os 3 temas para Semana ${weekNum}. Timing aprovado: ${JSON.stringify(timing || {})}` }],
       });
 
-      const schedText = concatTextFromContent(scheduleMsg.content as unknown[]);
-      let weekSchedule: Record<string, unknown>;
+      const text = concatText(msg.content as unknown[]);
       try {
-        weekSchedule = parseJsonObject(schedText || "{}");
-      } catch {
-        weekSchedule = { week: weekNum, schedule: [], focus: "" };
+        const result = parseJson(text);
+        return NextResponse.json({ ...result, trendContext });
+      } catch (e: any) {
+        return NextResponse.json({ error: e.message }, { status: 422 });
       }
-
-      return NextResponse.json({ weekSchedule, researchText });
     }
 
-    // ─── STAGE 4: PRODUCE CONTENT FOR APPROVED THEMES ───
+    // ─── 4. PRODUCE CONTENT — para um tema aprovado (Sonnet) ───
     if (action === "produce_content") {
       const client = getAnthropic();
-      if (!client) {
-        return NextResponse.json(
-          { error: "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local)." },
-          { status: 503 }
-        );
-      }
+      if (!client) return noKey();
 
-      const { theme, channel, format, briefing, voiceProfile, goal } = body;
+      const { theme, angle, briefing, channel, format, voiceProfile, goal } = body;
 
-      const voiceRules = voiceProfile?.rules?.length
-        ? `\nREGRAS DE VOZ: ${voiceProfile.rules.join("; ")}`
+      const voiceBlock = [
+        voiceProfile?.rules?.length ? `Regras de voz: ${voiceProfile.rules.slice(0, 5).join("; ")}` : "",
+        voiceProfile?.anti_patterns?.length ? `Nunca use: ${voiceProfile.anti_patterns.slice(0, 5).join("; ")}` : "",
+        voiceProfile?.vocabulary?.length ? `Vocabulário: ${voiceProfile.vocabulary.slice(0, 10).join(", ")}` : "",
+      ].filter(Boolean).join("\n");
+
+      const goldExamples = (voiceProfile?.examples || [])
+        .filter((e: any) => e.rating >= 4).slice(-2);
+      const examplesBlock = goldExamples.length
+        ? `\nExemplos gold:\n${goldExamples.map((e: any) => `---\n${e.text.slice(0, 300)}\n---`).join("\n")}`
         : "";
-      const antiPatterns = voiceProfile?.anti_patterns?.length
-        ? `\nNUNCA USE: ${voiceProfile.anti_patterns.join("; ")}`
-        : "";
-      const goldExamples = voiceProfile?.examples?.filter((e: any) => e.rating >= 4).slice(-3);
-      const examplesBlock = goldExamples?.length
-        ? `\nEXEMPLOS DE REFERÊNCIA:\n${goldExamples.map((e: any) => `---\n${e.text}\n---`).join("\n")}`
-        : "";
+
       const skillsBlock = voiceProfile?.skills?.length
-        ? `\n\nHABILIDADES ESPECÍFICAS DO AGENTE:\n${voiceProfile.skills.map((s: any) => `## ${s.name.toUpperCase()} (${s.category})\n${s.instructions}`).join("\n\n")}`
+        ? `\n\nHabilidades do agente:\n${voiceProfile.skills.map((s: any) => `[${s.name}] ${s.instructions.slice(0, 200)}`).join("\n")}`
         : "";
 
-      const formatInstructions: Record<string, string> = {
-        post: "Post texto. LinkedIn: 1200-1800 chars. Twitter: max 280. Instagram: 200-400 palavras.",
-        carousel: "Carrossel. 7-10 slides. Slide 1: hook (max 8 palavras). Cada slide: 1 ideia, headline curta + body curto. Último: CTA sutil. No campo 'content', coloque o texto de cada slide separado por '---SLIDE---'.",
-        thread: "Thread 4-6 tweets. Max 280 chars cada. Primeiro tweet funciona solo. Numere: 1/N. Separe por nova linha.",
-        reel: "Script de Reel 15-30s. Hook nos 2 primeiros segundos. Inclua text overlays sugeridos entre [colchetes].",
-        story: "Copy para Story. Max 3 frases. Inclua sugestão de enquete ou pergunta.",
+      const formatGuide: Record<string, string> = {
+        post: "Texto corrido. LinkedIn: 800-1500 chars, abra com hook forte. Twitter: max 280. Instagram: 150-300 palavras + CTA no final.",
+        carousel: "Carrossel. Slide 1: hook (max 8 palavras). Slides 2-7: 1 ideia por slide, headline curta + corpo. Último: CTA sutil. Separe slides com '---SLIDE---'.",
+        thread: "Thread 4-5 tweets numerados. Max 280 chars cada. Tweet 1 funciona solo. Formato: 1/N",
+        reel: "Script 15-30s. Hook nos 3 primeiros segundos. [text overlay] entre colchetes. Cenas claras.",
+        story: "3 frases max. Impacto imediato. Sugestão de enquete ou CTA no final.",
       };
 
-      const visualTypeByFormat: Record<string, string> = {
+      const visualTypeMap: Record<string, string> = {
         post: channel === "instagram" ? "image" : "none",
         carousel: "carousel",
         thread: "none",
@@ -258,95 +243,70 @@ Responda APENAS JSON sem markdown:
         story: "image",
       };
 
-      const message = await client.messages.create({
-        model: MODEL,
-        max_tokens: 2500,
-        system: `Você é o ghostwriter e diretor criativo do Eric Bueno. Escreva COMO SE FOSSE O ERIC.
+      const msg = await client.messages.create({
+        model: MODEL_HEAVY,
+        max_tokens: 1500,
+        system: `Você é ghostwriter do Eric Bueno. Escreva COMO ERIC, em primeira pessoa.
+Eric: empreendedor, sócio de fintech (Trigo Dourado), investidor, advisor tech. Fez exit.
+Tom: técnico mas humano. Direto. Confiante. Nerd orgulhoso. NUNCA guru/coach/influencer.
+${voiceBlock}${examplesBlock}${skillsBlock}
 
-QUEM É ERIC: Empreendedor, investidor, sócio de fintech de microcrédito. Fez exit. Advisor em tech.
-TOM: Técnico mas acessível. Direto. Confiante sem arrogância. Nerd orgulhoso.
-GUARDRAILS: Nunca guru/coach. Nunca dados sensíveis. Nunca política. Nunca raso. Nunca influencer.
-${voiceRules}${antiPatterns}${examplesBlock}${skillsBlock}
+Meta: ${goal?.interpreted_goal || "Crescer presença digital"}
+Canal: ${channel} | Formato: ${format}
+${formatGuide[format] || formatGuide.post}
 
-META: ${goal?.interpreted_goal || "Crescer presença digital"}
-CANAL: ${channel} | FORMATO: ${format}
-INSTRUÇÃO DE FORMATO: ${formatInstructions[format] || formatInstructions.post}
-
-Responda APENAS em JSON válido (sem markdown):
+Responda APENAS JSON sem markdown:
 {
-  "content": "o texto completo do post/thread/script conforme o formato",
-  "style_notes": "instruções de estilo para postagem: emojis usados (se houver), formatação, linha de abertura destacada, sugestão de horário ideal, hashtags (se houver)",
-  "visual_prompt": "prompt detalhado em inglês para geração de imagem ou vídeo que acompanhe este conteúdo — descreva cena, estilo visual, paleta, mood, composição. Se não precisar de visual, escreva 'N/A'.",
-  "visual_type": "${visualTypeByFormat[format] || "none"}"
+  "content": "texto completo do post/script/thread",
+  "style_notes": "instruções de postagem: emojis (se houver), formatação, melhor horário",
+  "visual_prompt": "prompt detalhado em inglês para gerar imagem/vídeo — cena, estilo, paleta, mood. Escreva 'N/A' se não precisar.",
+  "visual_type": "${visualTypeMap[format] || "none"}"
 }`,
         messages: [{
           role: "user",
-          content: `Tema: ${theme}\nBriefing: ${briefing}\nCanal: ${channel}\nFormato: ${format}`,
+          content: `Tema: ${theme}\nÂngulo: ${angle || briefing}\nBriefing: ${briefing}\nCanal: ${channel} | Formato: ${format}`,
         }],
       });
 
-      const raw = concatTextFromContent(message.content as unknown[]);
+      const raw = concatText(msg.content as unknown[]);
       let result: Record<string, unknown>;
       try {
-        result = parseJsonObject(raw || "{}");
+        result = parseJson(raw);
       } catch {
-        // Fallback: treat raw as plain content
-        result = {
-          content: raw,
-          style_notes: "",
-          visual_prompt: "",
-          visual_type: visualTypeByFormat[format] || "none",
-        };
+        result = { content: raw, style_notes: "", visual_prompt: "", visual_type: visualTypeMap[format] || "none" };
       }
 
       return NextResponse.json({ ...result, format, channel });
     }
 
-    // ─── STAGE 6: PROGRESS REPORT ───
+    // ─── 5. PROGRESS REPORT (Haiku) ───
     if (action === "progress_report") {
       const client = getAnthropic();
-      if (!client) {
-        return NextResponse.json(
-          {
-            error:
-              "ANTHROPIC_API_KEY não configurada. Adicione em Vercel → Environment Variables (ou .env.local).",
-          },
-          { status: 503 }
-        );
-      }
+      if (!client) return noKey();
 
       const { goal, publishedPosts, metrics, weekNumber } = body;
 
-      const message = await client.messages.create({
-        model: MODEL,
-        max_tokens: 1500,
-        system: `Você é o analista de performance do Eric. Gere um report de progresso comparando com a meta do mês.
-
-Responda em JSON (sem markdown):
+      const msg = await client.messages.create({
+        model: MODEL_LIGHT,
+        max_tokens: 800,
+        system: `Analista de performance do Eric. Compare publicações com a meta. Retorne JSON sem markdown:
 {
-  "summary": "resumo em 3 frases",
-  "goal_progress": [
-    { "kpi": "nome", "target": 0, "current": 0, "pct": 0, "on_track": true }
-  ],
-  "top_3_posts": [{ "preview": "texto curto", "channel": "canal", "engagement": 0, "why": "por que performou" }],
-  "what_worked": ["insight"],
-  "what_to_adjust": ["ajuste"],
-  "next_week_focus": "onde focar na próxima semana",
-  "confidence_score": 0.0-1.0
+  "summary": "3 frases sobre o progresso",
+  "goal_progress": [{ "kpi": "nome", "target": 0, "current": 0, "pct": 0, "on_track": true }],
+  "what_worked": ["insight 1"],
+  "what_to_adjust": ["ajuste 1"],
+  "next_week_focus": "onde focar",
+  "confidence_score": 0.7
 }`,
         messages: [{
           role: "user",
-          content: `Meta: ${JSON.stringify(goal)}\nSemana: ${weekNumber}\nPosts publicados: ${JSON.stringify(publishedPosts || [])}\nMétricas: ${JSON.stringify(metrics || {})}`,
+          content: `Meta: ${JSON.stringify(goal)}\nSemana: ${weekNumber}\nPosts: ${JSON.stringify((publishedPosts || []).slice(0, 10))}\nMétricas: ${JSON.stringify(metrics || {})}`,
         }],
       });
 
-      const text = concatTextFromContent(message.content as unknown[]);
+      const text = concatText(msg.content as unknown[]);
       let report: Record<string, unknown>;
-      try {
-        report = parseJsonObject(text || "{}");
-      } catch {
-        report = { summary: text || "" };
-      }
+      try { report = parseJson(text); } catch { report = { summary: text }; }
       return NextResponse.json({ report });
     }
 
