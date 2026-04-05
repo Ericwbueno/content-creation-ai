@@ -31,15 +31,33 @@ function concatText(content: unknown[]): string {
 }
 
 function parseJson(raw: string): Record<string, unknown> {
-  const s = raw.replace(/```json\s*|```/gi, "").trim();
-  const tryParse = (str: string) => {
+  // Strip markdown code fences and trim
+  let s = raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim();
+
+  const tryParse = (str: string): Record<string, unknown> => {
     const o = JSON.parse(str);
     if (typeof o !== "object" || o === null || Array.isArray(o)) throw new Error("not object");
     return o as Record<string, unknown>;
   };
+
+  // 1. Direct parse
   try { return tryParse(s); } catch {}
+
+  // 2. Extract first { ... last }
   const start = s.indexOf("{"), end = s.lastIndexOf("}");
-  if (start >= 0 && end > start) return tryParse(s.slice(start, end + 1));
+  if (start >= 0 && end > start) {
+    try { return tryParse(s.slice(start, end + 1)); } catch {}
+  }
+
+  // 3. Remove trailing commas before ] or } (common LLM mistake)
+  const cleaned = s
+    .replace(/,\s*([}\]])/g, "$1")   // trailing commas
+    .replace(/([{\[,])\s*,/g, "$1"); // double commas
+  try { return tryParse(cleaned); } catch {}
+  if (start >= 0 && end > start) {
+    try { return tryParse(cleaned.slice(start, end + 1)); } catch {}
+  }
+
   throw new Error("JSON inválido na resposta do modelo. Tente novamente.");
 }
 
@@ -159,7 +177,7 @@ Retorne APENAS JSON sem markdown:
 
       const msg = await client.messages.create({
         model: MODEL_LIGHT,
-        max_tokens: 800,
+        max_tokens: 1400,
         system: `Você gera exatamente 3 temas de conteúdo para a Semana ${weekNum} do mês ${month}/${year}.
 Eric Bueno: empreendedor, fintech (Trigo Dourado), investidor, advisor tech. Pilares: AI+Negócios | Ativos Alternativos | Empreendedorismo.
 Meta: ${goal?.interpreted_goal || "Crescer presença digital"}${skillsBlock}
