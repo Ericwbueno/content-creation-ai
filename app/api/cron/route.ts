@@ -131,19 +131,19 @@ export async function GET(req: NextRequest) {
 
           // Map to our analytics format
           const channelData = analytics[post.channel] || analytics;
-          const parsedMetricsData = {
-            impressions: channelData.impressions || channelData.views || 0,
-            likes: channelData.likes || channelData.reactions || 0,
-            comments: channelData.comments || channelData.replies || 0,
-            shares: channelData.shares || channelData.reposts || 0,
+          const impressions = channelData.impressions || channelData.views || 0;
+          const likes = channelData.likes || channelData.reactions || 0;
+          const comments = channelData.comments || channelData.replies || 0;
+          const shares = channelData.shares || channelData.reposts || 0;
+          const metricsData = {
+            impressions,
+            likes,
+            comments,
+            shares,
             saves: channelData.saves || channelData.bookmarks || 0,
             clicks: channelData.clicks || 0,
-          };
-          const metricsData = {
-            ...parsedMetricsData,
-            engagement_rate: parsedMetricsData.impressions > 0
-              ? ((parsedMetricsData.likes + parsedMetricsData.comments + parsedMetricsData.shares) / parsedMetricsData.impressions) * 100
-              : 0,
+            engagement_rate:
+              impressions > 0 ? ((likes + comments + shares) / impressions) * 100 : 0,
           };
 
           // Upsert analytics

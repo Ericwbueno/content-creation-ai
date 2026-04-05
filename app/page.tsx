@@ -2015,18 +2015,20 @@ function AnalyticsTab({ engine }: { engine: ReturnType<typeof useContentEngine> 
   const approved = engine.contentList.filter((c) => c.status === "approved" || c.status === "published");
 
   const saveManualMetric = (id: string) => {
-    const parsedMetrics = {
-      ...metricForm,
-      impressions: parseInt(metricForm.impressions) || 0,
-      likes: parseInt(metricForm.likes) || 0,
-      comments: parseInt(metricForm.comments) || 0,
-      shares: parseInt(metricForm.shares) || 0,
-      saves: parseInt(metricForm.saves) || 0,
-    };
+    const impressions = parseInt(metricForm.impressions) || 0;
+    const likes = parseInt(metricForm.likes) || 0;
+    const comments = parseInt(metricForm.comments) || 0;
+    const shares = parseInt(metricForm.shares) || 0;
+    const saves = parseInt(metricForm.saves) || 0;
     const metrics = {
-      ...parsedMetrics,
-      engagement_rate: parsedMetrics.impressions
-        ? ((parsedMetrics.likes + parsedMetrics.comments + parsedMetrics.shares) / parsedMetrics.impressions) * 100
+      ...metricForm,
+      impressions,
+      likes,
+      comments,
+      shares,
+      saves,
+      engagement_rate: impressions
+        ? ((likes + comments + shares) / impressions) * 100
         : 0,
     };
 
