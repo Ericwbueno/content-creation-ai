@@ -59,6 +59,7 @@ export default function Home() {
     { id: "analytics", label: "Analytics", icon: "📊" },
     { id: "voice", label: "Voz", icon: "🎙" },
     { id: "goals", label: "Objetivos", icon: "◎" },
+    { id: "video", label: "Vídeo", icon: "🎬" },
     { id: "llm", label: "AI Config", icon: "⚙" },
   ];
 
@@ -155,6 +156,7 @@ export default function Home() {
         {tab === "analytics" && <AnalyticsTab engine={engine} />}
         {tab === "voice" && <VoiceTab engine={engine} />}
         {tab === "goals" && <GoalsTab engine={engine} />}
+        {tab === "video" && <VideoTab engine={engine} />}
         {tab === "llm" && <LLMConfigTab />}
       </main>
     </div>
@@ -1850,6 +1852,264 @@ function AnalyticsTab({ engine }: { engine: ReturnType<typeof useContentEngine> 
             <p className="text-xs text-slate-500 text-center">
               📅 Melhor dia pra postar: <strong className="text-slate-300">{analysis.best_day}</strong>
             </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== VIDEO TAB =====
+function VideoTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
+  const [source, setSource] = useState<"new" | "existing">("new");
+  const [postBody, setPostBody] = useState("");
+  const [selectedPost, setSelectedPost] = useState<string | null>(null);
+  const [format, setFormat] = useState<"reel" | "gif" | "story">("reel");
+  const [provider, setProvider] = useState("runway");
+  const [generatingScript, setGeneratingScript] = useState(false);
+  const [generatingVideo, setGeneratingVideo] = useState(false);
+  const [script, setScript] = useState<any>(null);
+  const [videoResult, setVideoResult] = useState<any>(null);
+  const [customPrompt, setCustomPrompt] = useState("");
+
+  const approved = engine.contentList.filter((c) => c.status === "approved" || c.status === "published");
+
+  const handleGenerateScript = async () => {
+    const body = source === "existing" && selectedPost
+      ? engine.contentList.find((c) => c.id === selectedPost)?.body || ""
+      : postBody;
+
+    if (!body.trim()) return;
+    setGeneratingScript(true);
+    setScript(null);
+    setVideoResult(null);
+
+    try {
+      const res = await engine.generateVideoScript(body, "instagram", format);
+      setScript(res.script);
+      setCustomPrompt(res.script?.visual_prompt || "");
+    } catch (err: any) {
+      alert("Erro: " + err.message);
+    }
+    setGeneratingScript(false);
+  };
+
+  const handleGenerateVideo = async () => {
+    setGeneratingVideo(true);
+    try {
+      const res = await engine.generateVideo({
+        customPrompt: customPrompt || script?.visual_prompt,
+        provider,
+        duration: script?.duration_seconds || 5,
+        format,
+      });
+      setVideoResult(res);
+    } catch (err: any) {
+      alert("Erro: " + err.message);
+    }
+    setGeneratingVideo(false);
+  };
+
+  return (
+    <div className="animate-fade-in">
+      <h1 className="text-xl font-bold text-white tracking-tight mb-6">Vídeo & GIF</h1>
+
+      {/* SOURCE */}
+      <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-5 mb-4">
+        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Fonte do conteúdo</label>
+
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => setSource("new")} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${source === "new" ? "bg-[#1e293b] text-white border-[#475569]" : "text-slate-500 border-[#334155]"}`}>
+            Novo texto
+          </button>
+          <button onClick={() => setSource("existing")} className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${source === "existing" ? "bg-[#1e293b] text-white border-[#475569]" : "text-slate-500 border-[#334155]"}`}>
+            Post existente
+          </button>
+        </div>
+
+        {source === "new" ? (
+          <textarea
+            className="w-full p-3 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-sm resize-y focus:border-indigo-500 placeholder-slate-600"
+            rows={3}
+            placeholder="Cole ou escreva o conteúdo que quer transformar em vídeo..."
+            value={postBody}
+            onChange={(e) => setPostBody(e.target.value)}
+          />
+        ) : (
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {approved.length === 0 ? (
+              <p className="text-xs text-slate-500">Nenhum post aprovado. Gere conteúdo primeiro.</p>
+            ) : (
+              approved.slice(0, 10).map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedPost(item.id)}
+                  className={`w-full text-left p-3 rounded-lg border text-xs transition ${
+                    selectedPost === item.id ? "border-indigo-500/50 bg-indigo-500/5" : "border-[#1e293b] bg-[#0a0e17]"
+                  }`}
+                >
+                  <span className="mr-1">{CHANNELS[item.channel]?.emoji}</span>
+                  {item.body?.slice(0, 100)}...
+                </button>
+              ))
+            )}
+          </div>
+        )}
+
+        {/* FORMAT */}
+        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mt-4 mb-2">Formato</label>
+        <div className="flex gap-2">
+          {([
+            { id: "reel", label: "🎬 Reel / Short", desc: "5-15s vertical" },
+            { id: "gif", label: "✨ GIF", desc: "Loop 3-5s" },
+            { id: "story", label: "📱 Story", desc: "5-10s vertical" },
+          ] as const).map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setFormat(f.id)}
+              className={`flex-1 p-2.5 rounded-lg border text-center transition ${
+                format === f.id ? "border-indigo-500/50 bg-indigo-500/5 text-white" : "border-[#334155] text-slate-500"
+              }`}
+            >
+              <div className="text-xs font-medium">{f.label}</div>
+              <div className="text-[10px] text-slate-600 mt-0.5">{f.desc}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* PROVIDER */}
+        <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mt-4 mb-2">Modelo de vídeo</label>
+        <div className="flex gap-2 flex-wrap">
+          {[
+            { id: "runway", label: "Runway Gen-3", speed: "⚡", quality: "Premium" },
+            { id: "luma", label: "Luma Dream", speed: "⏱", quality: "Alta" },
+            { id: "replicate", label: "AnimateDiff", speed: "⚡", quality: "GIF" },
+          ].map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setProvider(p.id)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
+                provider === p.id ? "bg-purple-500/10 text-purple-400 border-purple-500/30" : "text-slate-500 border-[#334155]"
+              }`}
+            >
+              {p.label} {p.speed}
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={handleGenerateScript}
+          disabled={generatingScript || (source === "new" ? !postBody.trim() : !selectedPost)}
+          className="mt-5 w-full flex items-center justify-center gap-2 px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
+        >
+          {generatingScript ? "Gerando script..." : "🎬 Gerar script de vídeo"}
+        </button>
+      </div>
+
+      {/* SCRIPT RESULT */}
+      {script && (
+        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-5 mb-4">
+          <h3 className="text-sm font-semibold text-white mb-3">📝 Script gerado</h3>
+
+          {script.hook && (
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 mb-3">
+              <span className="text-[10px] text-amber-400 uppercase font-semibold">Hook (2s iniciais)</span>
+              <p className="text-sm text-white mt-1">{script.hook}</p>
+            </div>
+          )}
+
+          {script.script && (
+            <div className="bg-[#0a0e17] border border-[#1e293b] rounded-lg p-3 mb-3">
+              <span className="text-[10px] text-slate-500 uppercase font-semibold">Roteiro</span>
+              <p className="text-xs text-slate-300 mt-1 whitespace-pre-wrap">{script.script}</p>
+            </div>
+          )}
+
+          {script.text_overlay?.length > 0 && (
+            <div className="mb-3">
+              <span className="text-[10px] text-slate-500 uppercase font-semibold">Text overlays</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {script.text_overlay.map((t: string, i: number) => (
+                  <span key={i} className="px-2 py-1 bg-[#1e293b] rounded text-xs text-slate-300">{t}</span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* VISUAL PROMPT */}
+          <label className="block text-[10px] text-slate-500 uppercase font-semibold mb-1 mt-3">Prompt visual (editável)</label>
+          <textarea
+            className="w-full p-2.5 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y focus:border-indigo-500"
+            rows={2}
+            value={customPrompt}
+            onChange={(e) => setCustomPrompt(e.target.value)}
+          />
+
+          <div className="flex items-center gap-3 mt-3">
+            <span className="text-[10px] text-slate-500">⏱ {script.duration_seconds || 5}s</span>
+            <span className="text-[10px] text-slate-500">📐 {script.format_suggestion || format}</span>
+          </div>
+
+          <button
+            onClick={handleGenerateVideo}
+            disabled={generatingVideo}
+            className="mt-4 w-full flex items-center justify-center gap-2 px-5 py-3 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-purple-500/20 transition"
+          >
+            {generatingVideo ? "⏳ Gerando vídeo (pode levar 1-2 min)..." : `🎬 Gerar ${format === "gif" ? "GIF" : "vídeo"} com ${provider === "runway" ? "Runway" : provider === "luma" ? "Luma" : "AnimateDiff"}`}
+          </button>
+        </div>
+      )}
+
+      {/* VIDEO RESULT */}
+      {videoResult && (
+        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-5 mb-4">
+          <h3 className="text-sm font-semibold text-white mb-3">
+            {videoResult.success ? "✅ Vídeo gerado" : "⚠️ Resultado"}
+          </h3>
+
+          {videoResult.url ? (
+            <div>
+              {format === "gif" ? (
+                <img src={videoResult.url} alt="Generated GIF" className="rounded-lg border border-[#1e293b] max-w-full" />
+              ) : (
+                <video
+                  src={videoResult.url}
+                  controls
+                  autoPlay
+                  loop
+                  muted
+                  className="rounded-lg border border-[#1e293b] max-w-full"
+                  style={{ maxHeight: 400 }}
+                />
+              )}
+              <div className="flex gap-2 mt-3">
+                <a
+                  href={videoResult.url}
+                  download
+                  target="_blank"
+                  rel="noopener"
+                  className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs"
+                >
+                  ⬇ Download
+                </a>
+                <span className="text-[10px] text-slate-500 self-center">
+                  via {videoResult.provider} · {videoResult.format}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <p className="text-xs text-amber-400 mb-2">{videoResult.error || videoResult.message || "Vídeo não gerado."}</p>
+              {videoResult.needsConfig && (
+                <p className="text-xs text-slate-500">Configure a API key do {provider} em AI Config ou nas variáveis de ambiente.</p>
+              )}
+              {videoResult.prompt && (
+                <div className="mt-2 p-3 bg-[#0a0e17] rounded-lg">
+                  <span className="text-[10px] text-slate-500">Prompt gerado (copie pra usar manualmente):</span>
+                  <p className="text-xs text-slate-300 mt-1">{videoResult.prompt}</p>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

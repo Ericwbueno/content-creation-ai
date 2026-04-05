@@ -427,5 +427,79 @@ export function useContentEngine() {
     connectInstagram,
     fetchLinkedInMetrics,
     fetchInstagramMetrics,
+
+    // API (Phase 3 — Publishing)
+    publishPost: async (post: string, platforms: string[], opts?: { mediaUrls?: string[]; scheduledDate?: string; isVideo?: boolean }) => {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: opts?.scheduledDate ? "schedule" : "publish", post, platforms, ...opts }),
+      });
+      return res.json();
+    },
+
+    checkPublishConfig: async () => {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "check" }),
+      });
+      return res.json();
+    },
+
+    getPublishHistory: async () => {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "history" }),
+      });
+      return res.json();
+    },
+
+    getPostAnalytics: async (postId: string, platforms: string[]) => {
+      const res = await fetch("/api/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "analytics", postId, platforms }),
+      });
+      return res.json();
+    },
+
+    generateReport: async (period: "week" | "month") => {
+      const res = await fetch("/api/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period }),
+      });
+      return res.json();
+    },
+
+    // API (Phase 4 — Video)
+    generateVideoScript: async (postBody: string, channel: string, format?: string) => {
+      const res = await fetch("/api/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "script", postBody, channel, format }),
+      });
+      return res.json();
+    },
+
+    generateVideoPrompt: async (postBody: string, format?: string) => {
+      const res = await fetch("/api/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "prompt", postBody, format }),
+      });
+      return res.json();
+    },
+
+    generateVideo: async (opts: { customPrompt?: string; imageUrl?: string; provider?: string; duration?: number; format?: string }) => {
+      const res = await fetch("/api/generate-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "generate", ...opts }),
+      });
+      return res.json();
+    },
   };
 }

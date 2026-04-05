@@ -63,7 +63,16 @@ Quando quiser persistir dados no servidor (ao invés de localStorage):
 - [x] Dashboard de analytics com AI (padrões, recomendações)
 - [x] Sugestões de voice profile baseadas em performance
 
-### Fase 3
-- [ ] Posting automático (Ayrshare)
-- [ ] Relatório semanal com AI
-- [ ] A/B testing de variações
+### Fase 3 (✅ completa)
+- [x] Posting automático via Ayrshare (LinkedIn, X, Instagram)
+- [x] Agendamento de posts com data/hora
+- [x] Cron job (Vercel) a cada 15min publica posts aprovados
+- [x] Fetch automático de métricas (a cada 6h)
+- [x] Relatório semanal/mensal com AI
+
+### Fase 4 (✅ completa)
+- [x] Scripts de vídeo curto com AI (hook, roteiro, overlays)
+- [x] Integração Runway Gen-3 (video)
+- [x] Integração Luma Dream Machine (video)
+- [x] Integração AnimateDiff (GIFs)
+- [x] Suporte Reels, Stories e GIFs
