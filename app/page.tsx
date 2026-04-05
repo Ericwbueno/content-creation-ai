@@ -5,6 +5,82 @@ import { useContentEngine, ContentItem, Theme } from "./components/useContentEng
 import type { Goal } from "@/lib/voice-engine";
 import { PROVIDERS, DEFAULT_ROUTES, DEFAULT_CONFIG, type LLMConfig, type TaskRoute } from "@/lib/llm-router";
 
+// ===== AI WORKING INDICATOR =====
+function AIWorkingIndicator({
+  message,
+  sub,
+  variant = "default",
+}: {
+  message: string;
+  sub?: string;
+  variant?: "default" | "inline" | "overlay";
+}) {
+  if (variant === "inline") {
+    return (
+      <div className="flex items-center gap-3 px-4 py-3 bg-indigo-500/8 border border-indigo-500/20 rounded-xl">
+        <div className="flex gap-1 shrink-0">
+          <span className="w-2 h-2 rounded-full bg-indigo-400 ai-dot-1" />
+          <span className="w-2 h-2 rounded-full bg-indigo-400 ai-dot-2" />
+          <span className="w-2 h-2 rounded-full bg-indigo-400 ai-dot-3" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm text-indigo-300 font-medium truncate">{message}</p>
+          {sub && <p className="text-xs text-slate-500 mt-0.5 truncate">{sub}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  if (variant === "overlay") {
+    return (
+      <div className="bg-[#0f1320]/95 border border-indigo-500/20 rounded-xl p-8 text-center">
+        {/* Spinner ring */}
+        <div className="relative w-14 h-14 mx-auto mb-5">
+          <svg className="ai-spinner w-14 h-14" viewBox="0 0 56 56" fill="none">
+            <circle cx="28" cy="28" r="24" stroke="#1e293b" strokeWidth="4" />
+            <path
+              d="M28 4 a24 24 0 0 1 24 24"
+              stroke="#6366f1"
+              strokeWidth="4"
+              strokeLinecap="round"
+            />
+          </svg>
+          <span className="absolute inset-0 flex items-center justify-center text-xl">🧠</span>
+        </div>
+        {/* Animated progress bar */}
+        <div className="w-40 h-0.5 bg-[#1e293b] rounded-full mx-auto mb-4 overflow-hidden">
+          <div className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full ai-bar" />
+        </div>
+        <p className="text-sm text-white font-medium mb-1">{message}</p>
+        {sub && <p className="text-xs text-slate-500">{sub}</p>}
+      </div>
+    );
+  }
+
+  // default
+  return (
+    <div className="bg-[#111827] border border-indigo-500/20 rounded-xl p-5 mb-4">
+      <div className="flex items-center gap-4">
+        {/* Spinner */}
+        <div className="relative shrink-0 w-10 h-10">
+          <svg className="ai-spinner w-10 h-10" viewBox="0 0 40 40" fill="none">
+            <circle cx="20" cy="20" r="16" stroke="#1e293b" strokeWidth="3" />
+            <path d="M20 4 a16 16 0 0 1 16 16" stroke="#6366f1" strokeWidth="3" strokeLinecap="round" />
+          </svg>
+          <span className="absolute inset-0 flex items-center justify-center text-sm">🧠</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-white font-medium mb-2">{message}</p>
+          <div className="w-full h-0.5 bg-[#1e293b] rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 rounded-full ai-bar" />
+          </div>
+          {sub && <p className="text-xs text-slate-500 mt-1.5">{sub}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ===== CONSTANTS =====
 const CHANNELS: Record<string, { label: string; emoji: string; color: string }> = {
   linkedin: { label: "LinkedIn", emoji: "💼", color: "#0A66C2" },
@@ -416,10 +492,18 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
 
       {/* LOADING OVERLAY */}
       {loading && (
-        <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-6 mb-4 text-center">
-          <div className="text-2xl mb-3 animate-pulse">🧠</div>
-          <p className="text-sm text-indigo-300">{loadingMessage}</p>
-        </div>
+        <AIWorkingIndicator
+          message={loadingMessage || "AI trabalhando..."}
+          sub={
+            loadingMessage.includes("cronograma")
+              ? "Pesquisando temas + montando pauta completa"
+              : loadingMessage.includes("Produzindo")
+              ? "Escrevendo como o Eric para cada canal selecionado"
+              : loadingMessage.includes("progresso")
+              ? "Cruzando publicações com as métricas da meta"
+              : "Claude está processando seu pedido"
+          }
+        />
       )}
 
       {/* ═══ STAGE 1: DEFINE GOAL ═══ */}
@@ -1224,9 +1308,24 @@ function GenerateTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             disabled={researching}
             className="text-xs text-indigo-400 hover:text-indigo-300 transition disabled:opacity-50"
           >
-            {researching ? "Pesquisando..." : "🔍 Pesquisar temas"}
+            {researching ? (
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 ai-dot-1 inline-block" />
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 ai-dot-2 inline-block" />
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 ai-dot-3 inline-block" />
+              <span className="ml-1">Pesquisando...</span>
+            </span>
+          ) : "🔍 Pesquisar temas"}
           </button>
         </div>
+
+        {researching && (
+          <AIWorkingIndicator
+            message="Pesquisando temas na web..."
+            sub="Claude + busca em tempo real — leva ~15s"
+            variant="inline"
+          />
+        )}
 
         <textarea
           className="w-full p-3 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-sm resize-y focus:border-indigo-500 placeholder-slate-600"
@@ -1307,10 +1406,11 @@ function GenerateTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
 
       {/* Loading */}
       {generating && (
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-8 text-center">
-          <div className="text-indigo-400 text-lg mb-2 animate-pulse">● ● ●</div>
-          <p className="text-slate-400 text-sm">Claude está escrevendo como Eric...</p>
-        </div>
+        <AIWorkingIndicator
+          message="Escrevendo como o Eric..."
+          sub={`Gerando para ${channels.length > 1 ? channels.length + " canais" : channels[0] || "canal selecionado"}`}
+          variant="overlay"
+        />
       )}
 
       {/* Results */}
@@ -1424,9 +1524,11 @@ function ReviewTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) 
       )}
 
       {analyzing && (
-        <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4 mb-4 text-center text-sm text-indigo-300">
-          🧠 Analisando suas edições pra aprender seu tom de voz...
-        </div>
+        <AIWorkingIndicator
+          message="Aprendendo seu tom de voz..."
+          sub="Claude analisa as edições para extrair padrões e atualizar as regras"
+          variant="inline"
+        />
       )}
 
       {pending.length === 0 ? (
@@ -1771,7 +1873,14 @@ function ImageGenerator({ engine, postBody, channel }: { engine: ReturnType<type
           disabled={generating}
           className="px-3 py-1.5 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded-md text-xs hover:bg-purple-500/20 transition disabled:opacity-40"
         >
-          {generating ? "Gerando imagem..." : "🖼 Gerar imagem"}
+          {generating ? (
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-1 inline-block" />
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-2 inline-block" />
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-3 inline-block" />
+              Gerando...
+            </span>
+          ) : "🖼 Gerar imagem"}
         </button>
         <button
           onClick={() => setShowCustom(!showCustom)}
@@ -1780,6 +1889,16 @@ function ImageGenerator({ engine, postBody, channel }: { engine: ReturnType<type
           {showCustom ? "Ocultar prompt" : "Prompt custom"}
         </button>
       </div>
+
+      {generating && (
+        <div className="mt-2">
+          <AIWorkingIndicator
+            message="Gerando imagem com Flux..."
+            sub="Replicate API · leva ~20-30s"
+            variant="inline"
+          />
+        </div>
+      )}
 
       {showCustom && (
         <input
@@ -1904,8 +2023,25 @@ function CarouselTab({ engine }: { engine: ReturnType<typeof useContentEngine> }
           disabled={generating || !theme.trim()}
           className="mt-4 w-full flex items-center justify-center gap-2 px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
         >
-          {generating ? "Gerando carrossel..." : "▦ Gerar carrossel"}
+          {generating ? (
+            <span className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-1 inline-block opacity-70" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-2 inline-block opacity-70" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-3 inline-block opacity-70" />
+              Gerando carrossel...
+            </span>
+          ) : "▦ Gerar carrossel"}
         </button>
+
+        {generating && (
+          <div className="mt-3">
+            <AIWorkingIndicator
+              message="Estruturando slides..."
+              sub={`${numSlides} slides · hook + conteúdo + CTA`}
+              variant="inline"
+            />
+          </div>
+        )}
       </div>
 
       {/* CAROUSEL PREVIEW */}
@@ -2170,9 +2306,23 @@ function AnalyticsTab({ engine }: { engine: ReturnType<typeof useContentEngine> 
             disabled={analyzing || Object.keys(manualMetrics).length < 2}
             className="px-4 py-2 bg-white text-[#0a0e17] rounded-lg text-xs font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
           >
-            {analyzing ? "Analisando..." : "📊 Rodar análise com AI"}
+            {analyzing ? (
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-1 inline-block opacity-70" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-2 inline-block opacity-70" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-3 inline-block opacity-70" />
+                Analisando...
+              </span>
+            ) : "📊 Rodar análise com AI"}
           </button>
         </div>
+
+        {analyzing && (
+          <AIWorkingIndicator
+            message="Analisando performance dos posts..."
+            sub="Claude cruza métricas, voz e metas para gerar insights"
+          />
+        )}
 
         {approved.length === 0 ? (
           <p className="text-sm text-slate-500">Nenhum post aprovado ainda.</p>
@@ -2472,9 +2622,23 @@ function VideoTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
           disabled={generatingScript || (source === "new" ? !postBody.trim() : !selectedPost)}
           className="mt-5 w-full flex items-center justify-center gap-2 px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
         >
-          {generatingScript ? "Gerando script..." : "🎬 Gerar script de vídeo"}
+          {generatingScript ? (
+            <span className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-1 inline-block opacity-70" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-2 inline-block opacity-70" />
+              <span className="w-1.5 h-1.5 rounded-full bg-[#0a0e17] ai-dot-3 inline-block opacity-70" />
+              Gerando script...
+            </span>
+          ) : "🎬 Gerar script de vídeo"}
         </button>
       </div>
+
+      {generatingScript && (
+        <AIWorkingIndicator
+          message="Criando roteiro para vídeo..."
+          sub={`Hook + roteiro + overlays para ${format === "gif" ? "GIF" : format}`}
+        />
+      )}
 
       {/* SCRIPT RESULT */}
       {script && (
@@ -2525,8 +2689,25 @@ function VideoTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
             disabled={generatingVideo}
             className="mt-4 w-full flex items-center justify-center gap-2 px-5 py-3 bg-purple-500/10 text-purple-400 border border-purple-500/20 rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-purple-500/20 transition"
           >
-            {generatingVideo ? "⏳ Gerando vídeo (pode levar 1-2 min)..." : `🎬 Gerar ${format === "gif" ? "GIF" : "vídeo"} com ${provider === "runway" ? "Runway" : provider === "luma" ? "Luma" : "AnimateDiff"}`}
+            {generatingVideo ? (
+              <span className="flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-1 inline-block" />
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-2 inline-block" />
+                <span className="w-1.5 h-1.5 rounded-full bg-purple-400 ai-dot-3 inline-block" />
+                Gerando vídeo...
+              </span>
+            ) : `🎬 Gerar ${format === "gif" ? "GIF" : "vídeo"} com ${provider === "runway" ? "Runway" : provider === "luma" ? "Luma" : "AnimateDiff"}`}
           </button>
+
+          {generatingVideo && (
+            <div className="mt-3">
+              <AIWorkingIndicator
+                message="Gerando vídeo com IA..."
+                sub={`${provider === "runway" ? "Runway Gen-3" : provider === "luma" ? "Luma Dream" : "AnimateDiff"} · pode levar 1-2 min`}
+                variant="inline"
+              />
+            </div>
+          )}
         </div>
       )}
 
