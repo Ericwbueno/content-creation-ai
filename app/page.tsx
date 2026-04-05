@@ -51,14 +51,11 @@ export default function Home() {
   }
 
   const tabs = [
-    { id: "dashboard", label: "Dashboard", icon: "◻" },
+    { id: "pipeline", label: "Pipeline", icon: "⚡" },
     { id: "calendar", label: "Cronograma", icon: "📅" },
-    { id: "generate", label: "Gerar", icon: "+" },
-    { id: "carousel", label: "Carrossel", icon: "▦" },
     { id: "review", label: "Revisar", icon: "✓", badge: engine.pendingReview.length },
     { id: "analytics", label: "Analytics", icon: "📊" },
     { id: "voice", label: "Voz", icon: "🎙" },
-    { id: "goals", label: "Objetivos", icon: "◎" },
     { id: "video", label: "Vídeo", icon: "🎬" },
     { id: "llm", label: "AI Config", icon: "⚙" },
   ];
@@ -148,14 +145,11 @@ export default function Home() {
 
       {/* MAIN */}
       <main className="flex-1 p-4 pt-16 md:p-8 md:pt-8 max-w-3xl overflow-y-auto overflow-x-hidden">
-        {tab === "dashboard" && <DashboardTab engine={engine} onNavigate={setTab} />}
+        {tab === "pipeline" && <PipelineTab engine={engine} onNavigate={setTab} />}
         {tab === "calendar" && <CalendarTab engine={engine} onNavigate={setTab} />}
-        {tab === "generate" && <GenerateTab engine={engine} onNavigate={setTab} />}
-        {tab === "carousel" && <CarouselTab engine={engine} />}
         {tab === "review" && <ReviewTab engine={engine} />}
         {tab === "analytics" && <AnalyticsTab engine={engine} />}
         {tab === "voice" && <VoiceTab engine={engine} />}
-        {tab === "goals" && <GoalsTab engine={engine} />}
         {tab === "video" && <VideoTab engine={engine} />}
         {tab === "llm" && <LLMConfigTab />}
       </main>
@@ -163,159 +157,604 @@ export default function Home() {
   );
 }
 
-// ===== DASHBOARD TAB (Performance Overview) =====
-function DashboardTab({ engine, onNavigate }: { engine: ReturnType<typeof useContentEngine>; onNavigate: (tab: string) => void }) {
-  const metrics = (() => {
+// ===== PIPELINE TAB — 6-Stage Autonomous Agent =====
+function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useContentEngine>; onNavigate: (tab: string) => void }) {
+  // Pipeline state
+  const [stage, setStage] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  const [goalText, setGoalText] = useState("");
+  const [goalPlan, setGoalPlan] = useState<any>(null);
+  const [schedule, setSchedule] = useState<any>(null);
+  const [approvedThemes, setApprovedThemes] = useState<Set<string>>(new Set());
+  const [producedContent, setProducedContent] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("");
+  const [progressReport, setProgressReport] = useState<any>(null);
+
+  // Load saved pipeline state
+  const [savedGoal] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ce-pipeline-goal") || "null"); } catch { return null; }
+  });
+  const [savedSchedule] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ce-pipeline-schedule") || "null"); } catch { return null; }
+  });
+
+  // Auto-resume pipeline
+  useState(() => {
+    if (savedGoal) { setGoalPlan(savedGoal); setStage(savedSchedule ? 3 : 2); }
+    if (savedSchedule) { setSchedule(savedSchedule); setStage(3); }
+  });
+
+  // Persist pipeline state
+  const savePipeline = (goal: any, sched: any) => {
     try {
-      const stored = localStorage.getItem("ce-manual-metrics");
-      return stored ? JSON.parse(stored) : {};
-    } catch { return {}; }
+      if (goal) localStorage.setItem("ce-pipeline-goal", JSON.stringify(goal));
+      if (sched) localStorage.setItem("ce-pipeline-schedule", JSON.stringify(sched));
+    } catch {}
+  };
+
+  // Metrics helper
+  const metrics = (() => {
+    try { return JSON.parse(localStorage.getItem("ce-manual-metrics") || "{}"); } catch { return {}; }
   })();
 
   const published = engine.contentList.filter((c) => c.status === "approved" || c.status === "published");
   const withMetrics = published.filter((c) => metrics[c.id]);
-  const totalImpressions = withMetrics.reduce((sum, c) => sum + (metrics[c.id]?.impressions || 0), 0);
-  const totalLikes = withMetrics.reduce((sum, c) => sum + (metrics[c.id]?.likes || 0), 0);
-  const totalComments = withMetrics.reduce((sum, c) => sum + (metrics[c.id]?.comments || 0), 0);
-  const avgEngagement = withMetrics.length > 0
-    ? withMetrics.reduce((sum, c) => sum + (metrics[c.id]?.engagement_rate || 0), 0) / withMetrics.length
-    : 0;
+  const totalImpressions = withMetrics.reduce((s, c) => s + (metrics[c.id]?.impressions || 0), 0);
+  const avgEngagement = withMetrics.length > 0 ? withMetrics.reduce((s, c) => s + (metrics[c.id]?.engagement_rate || 0), 0) / withMetrics.length : 0;
 
-  // Posts by channel
-  const byChannel: Record<string, number> = {};
-  engine.contentList.forEach((c) => { byChannel[c.channel] = (byChannel[c.channel] || 0) + 1; });
+  // ─── STAGE 1: Define Goal ───
+  const handleInterpretGoal = async () => {
+    if (!goalText.trim()) return;
+    setLoading(true);
+    setLoadingMessage("Interpretando sua meta...");
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "interpret_goal",
+          goalText,
+          currentMetrics: { impressions: totalImpressions, engagement: avgEngagement, posts: published.length },
+        }),
+      });
+      const data = await res.json();
+      if (data.plan) {
+        setGoalPlan(data.plan);
+        savePipeline(data.plan, null);
+        setStage(2);
+      }
+    } catch (err: any) { alert("Erro: " + err.message); }
+    setLoading(false);
+  };
 
-  // Posts by pillar
-  const byPillar: Record<string, number> = {};
-  engine.contentList.forEach((c) => { if (c.pillar) byPillar[c.pillar] = (byPillar[c.pillar] || 0) + 1; });
+  // ─── STAGE 2: Build Schedule ───
+  const handleBuildSchedule = async () => {
+    setLoading(true);
+    setLoadingMessage("Pesquisando temas e montando cronograma... (1-2 min)");
+    const now = new Date();
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "build_schedule",
+          goal: goalPlan,
+          pastPerformance: {
+            totalPosts: published.length,
+            avgEngagement,
+            topPillars: engine.contentList.reduce((acc: any, c) => { acc[c.pillar] = (acc[c.pillar] || 0) + 1; return acc; }, {}),
+          },
+          voiceProfile: engine.voiceProfile,
+          month: now.getMonth() + 1,
+          year: now.getFullYear(),
+        }),
+      });
+      const data = await res.json();
+      if (data.schedule) {
+        setSchedule(data.schedule);
+        savePipeline(goalPlan, data.schedule);
+        setStage(3);
+      }
+    } catch (err: any) { alert("Erro: " + err.message); }
+    setLoading(false);
+  };
 
-  // Posts this week
-  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const thisWeek = engine.contentList.filter((c) => c.created_at > weekAgo);
+  // ─── STAGE 3→4: Approve theme then produce ───
+  const toggleThemeApproval = (id: string) => {
+    setApprovedThemes((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleProduceContent = async () => {
+    if (approvedThemes.size === 0) return;
+    setLoading(true);
+    const items = schedule.schedule.filter((s: any) => approvedThemes.has(s.id));
+    let produced = 0;
+
+    for (const item of items) {
+      setLoadingMessage(`Produzindo ${produced + 1}/${items.length}: ${item.theme}...`);
+      try {
+        const res = await fetch("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "produce_content",
+            theme: item.theme,
+            channel: item.channel,
+            format: item.format,
+            briefing: item.briefing,
+            voiceProfile: engine.voiceProfile,
+            goal: goalPlan,
+          }),
+        });
+        const data = await res.json();
+        if (data.content) {
+          setProducedContent((prev) => ({ ...prev, [item.id]: data.content }));
+
+          // Add to content list for review
+          engine.addContent({
+            id: `agent-${item.id}-${Date.now()}`,
+            created_at: new Date().toISOString(),
+            scheduled_at: `${item.date}T${item.time || "09:00"}:00`,
+            channel: item.channel,
+            pillar: item.pillar,
+            status: "pending_review",
+            body: data.content,
+            original_body: data.content,
+            theme: item.theme,
+            voice_version: engine.voiceProfile.version,
+          });
+          produced++;
+        }
+      } catch {}
+    }
+    setLoadingMessage("");
+    setLoading(false);
+    setStage(4);
+  };
+
+  // ─── STAGE 6: Progress Report ───
+  const handleProgressReport = async () => {
+    setLoading(true);
+    setLoadingMessage("Analisando progresso vs meta...");
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "progress_report",
+          goal: goalPlan,
+          publishedPosts: published.slice(0, 20).map((p) => ({
+            ...p,
+            metrics: metrics[p.id] || null,
+          })),
+          metrics: { totalImpressions, avgEngagement, totalPosts: published.length },
+          weekNumber: Math.ceil(new Date().getDate() / 7),
+        }),
+      });
+      const data = await res.json();
+      setProgressReport(data.report);
+    } catch (err: any) { alert("Erro: " + err.message); }
+    setLoading(false);
+  };
+
+  // ─── STAGE INDICATOR ───
+  const stages = [
+    { n: 1, label: "Meta", icon: "🎯" },
+    { n: 2, label: "Planejar", icon: "🧠" },
+    { n: 3, label: "Pauta", icon: "📋" },
+    { n: 4, label: "Conteúdo", icon: "✍️" },
+    { n: 5, label: "Publicar", icon: "🚀" },
+    { n: 6, label: "Monitor", icon: "📊" },
+  ];
 
   return (
     <div className="animate-fade-in">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-bold text-white tracking-tight">Dashboard</h1>
-        <div className="flex gap-2">
-          <button onClick={() => onNavigate("generate")} className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg text-xs font-medium">
-            + Gerar
+      {/* PIPELINE HEADER */}
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-bold text-white tracking-tight">Pipeline</h1>
+        {goalPlan && (
+          <button onClick={() => { setStage(1); setGoalPlan(null); setSchedule(null); setApprovedThemes(new Set()); localStorage.removeItem("ce-pipeline-goal"); localStorage.removeItem("ce-pipeline-schedule"); }}
+            className="text-xs text-slate-500 hover:text-red-400 transition">
+            ↺ Reiniciar
           </button>
-          <button onClick={() => onNavigate("calendar")} className="px-3 py-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-xs font-medium">
-            📅 Cronograma
-          </button>
-        </div>
-      </div>
-
-      {/* PERFORMANCE STATS */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-          <div className="text-2xl font-bold text-white tracking-tight">{totalImpressions > 1000 ? `${(totalImpressions / 1000).toFixed(1)}k` : totalImpressions}</div>
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">Impressões</div>
-        </div>
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-          <div className="text-2xl font-bold text-emerald-400 tracking-tight">{avgEngagement.toFixed(1)}%</div>
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">Engajamento</div>
-        </div>
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-          <div className="text-2xl font-bold text-rose-400 tracking-tight">{totalLikes}</div>
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">Likes</div>
-        </div>
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
-          <div className="text-2xl font-bold text-blue-400 tracking-tight">{totalComments}</div>
-          <div className="text-[11px] text-slate-500 uppercase tracking-wider mt-1">Comentários</div>
-        </div>
-      </div>
-
-      {/* PIPELINE SUMMARY */}
-      <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-5 mb-4">
-        <h3 className="text-sm font-semibold text-white mb-3">Pipeline de conteúdo</h3>
-        <div className="flex gap-1 mb-3 rounded-lg overflow-hidden h-3">
-          {[
-            { status: "approved", color: "#10b981" },
-            { status: "pending_review", color: "#f59e0b" },
-            { status: "draft", color: "#6366f1" },
-            { status: "rejected", color: "#ef4444" },
-          ].map(({ status, color }) => {
-            const count = engine.contentList.filter((c) => c.status === status).length;
-            const pct = engine.contentList.length > 0 ? (count / engine.contentList.length) * 100 : 0;
-            return pct > 0 ? <div key={status} style={{ width: `${pct}%`, background: color }} className="transition-all" /> : null;
-          })}
-          {engine.contentList.length === 0 && <div className="w-full bg-[#1e293b]" />}
-        </div>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-          <span className="text-emerald-400">● {engine.contentList.filter((c) => c.status === "approved").length} aprovados</span>
-          <span className="text-amber-400">● {engine.pendingReview.length} pendentes</span>
-          <span className="text-indigo-400">● {engine.contentList.filter((c) => c.status === "draft").length} rascunhos</span>
-          <span className="text-red-400">● {engine.contentList.filter((c) => c.status === "rejected").length} rejeitados</span>
-        </div>
-      </div>
-
-      {/* CHANNEL + PILLAR DISTRIBUTION */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Por canal</h3>
-          {Object.entries(CHANNELS).map(([key, { label: l, emoji: e, color: c }]) => {
-            const count = byChannel[key] || 0;
-            const pct = engine.contentList.length > 0 ? (count / engine.contentList.length) * 100 : 0;
-            return (
-              <div key={key} className="flex items-center gap-2 mb-2">
-                <span className="text-sm w-6">{e}</span>
-                <span className="text-xs text-slate-300 w-16">{l}</span>
-                <div className="flex-1 h-2 bg-[#1e293b] rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: c }} />
-                </div>
-                <span className="text-xs text-slate-500 w-6 text-right">{count}</span>
-              </div>
-            );
-          })}
-        </div>
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Por pilar</h3>
-          {Object.entries(PILLARS).map(([key, { label, color }]) => {
-            const count = byPillar[key] || 0;
-            const pct = engine.contentList.length > 0 ? (count / engine.contentList.length) * 100 : 0;
-            return (
-              <div key={key} className="flex items-center gap-2 mb-2">
-                <span className="text-xs w-20 truncate" style={{ color }}>{label}</span>
-                <div className="flex-1 h-2 bg-[#1e293b] rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
-                </div>
-                <span className="text-xs text-slate-500 w-6 text-right">{count}</span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ACTIVE GOAL + VOICE */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
-        {engine.activeGoal && (
-          <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4 text-sm text-indigo-300">
-            <strong>◎ Objetivo:</strong> {GOAL_TYPES[engine.activeGoal.type]?.label}
-            {engine.activeGoal.strategy_notes && <p className="text-slate-400 text-xs mt-1">{engine.activeGoal.strategy_notes}</p>}
-          </div>
         )}
-        <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <div className="text-xs text-slate-400">Voice Profile</div>
-            <div className="text-lg font-bold text-white">v{engine.voiceProfile.version}</div>
-          </div>
-          <div className="text-right">
-            <div className="text-xs text-slate-400">{engine.voiceProfile.rules.length} regras</div>
-            <div className="text-xs text-slate-500">{engine.voiceProfile.examples.filter((e: any) => e.rating >= 4).length} exemplos gold</div>
-          </div>
-        </div>
       </div>
 
-      {/* RECENT ACTIVITY */}
-      <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Esta semana ({thisWeek.length} posts)</h2>
-      {thisWeek.length === 0 ? (
-        <div className="text-center py-8 bg-[#111827] border border-dashed border-[#1e293b] rounded-xl text-slate-500 text-sm">
-          Nenhum post esta semana. <button onClick={() => onNavigate("calendar")} className="text-indigo-400 underline">Gerar cronograma</button>
+      {/* STAGE PROGRESS BAR */}
+      <div className="flex gap-1 mb-6 overflow-x-auto pb-2">
+        {stages.map((s) => (
+          <button
+            key={s.n}
+            onClick={() => { if (s.n <= stage || (s.n === 6 && published.length > 0)) setStage(s.n as any); }}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap transition border ${
+              stage === s.n
+                ? "bg-white text-[#0a0e17] border-white"
+                : s.n < stage
+                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                : "bg-[#111827] text-slate-500 border-[#1e293b]"
+            }`}
+          >
+            <span>{s.n < stage ? "✓" : s.icon}</span>
+            <span className="hidden md:inline">{s.label}</span>
+            <span className="md:hidden">{s.n}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* LOADING OVERLAY */}
+      {loading && (
+        <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-6 mb-4 text-center">
+          <div className="text-2xl mb-3 animate-pulse">🧠</div>
+          <p className="text-sm text-indigo-300">{loadingMessage}</p>
         </div>
-      ) : (
-        thisWeek.slice(0, 5).map((item) => <ContentPreviewCard key={item.id} item={item} metrics={metrics[item.id]} />)
+      )}
+
+      {/* ═══ STAGE 1: DEFINE GOAL ═══ */}
+      {stage === 1 && !loading && (
+        <div>
+          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 md:p-6">
+            <h2 className="text-lg font-semibold text-white mb-2">🎯 Qual a meta deste mês?</h2>
+            <p className="text-xs text-slate-400 mb-4">Descreva em texto livre. O agente vai interpretar e criar KPIs mensuráveis.</p>
+
+            <textarea
+              className="w-full p-3 bg-[#0a0e17] border border-[#1e293b] rounded-lg text-slate-200 text-sm resize-y focus:border-indigo-500 placeholder-slate-600"
+              rows={4}
+              placeholder='Ex: "Quero crescer 30% de seguidores no LinkedIn focando em AI aplicada a fintech, com pelo menos 2 posts virais (>10k impressões)"'
+              value={goalText}
+              onChange={(e) => setGoalText(e.target.value)}
+            />
+
+            {/* Quick suggestions */}
+            <div className="flex flex-wrap gap-2 mt-3">
+              {[
+                "Crescer seguidores LinkedIn em 20%",
+                "Gerar 5 leads qualificados via Instagram",
+                "Posicionar como referência em AI + fintech",
+                "Aumentar engajamento médio pra 5%",
+              ].map((s) => (
+                <button key={s} onClick={() => setGoalText(s)} className="px-2.5 py-1 bg-[#1e293b] text-slate-400 rounded-full text-[10px] hover:text-white transition">
+                  {s}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={handleInterpretGoal}
+              disabled={!goalText.trim()}
+              className="mt-4 w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
+            >
+              ⚡ Definir meta e avançar
+            </button>
+          </div>
+
+          {/* Current stats */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+            {[
+              { n: published.length, l: "Posts", c: "text-white" },
+              { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" },
+              { n: totalImpressions > 1000 ? `${(totalImpressions / 1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" },
+              { n: `v${engine.voiceProfile.version}`, l: "Voice", c: "text-indigo-400" },
+            ].map((s, i) => (
+              <div key={i} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3 text-center">
+                <div className={`text-lg font-bold tracking-tight ${s.c}`}>{s.n}</div>
+                <div className="text-[10px] text-slate-500 uppercase">{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ STAGE 2: GOAL INTERPRETED → BUILD SCHEDULE ═══ */}
+      {stage === 2 && !loading && goalPlan && (
+        <div>
+          <div className="bg-[#111827] border border-emerald-500/20 rounded-xl p-4 md:p-5 mb-4">
+            <h2 className="text-sm font-semibold text-white mb-2">🧠 Meta interpretada</h2>
+            <p className="text-sm text-slate-300 mb-3">{goalPlan.interpreted_goal}</p>
+
+            {/* KPIs */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-3">
+              {(goalPlan.kpis || []).map((kpi: any, i: number) => (
+                <div key={i} className="bg-[#0a0e17] rounded-lg p-3 text-center">
+                  <div className="text-xs text-slate-400">{kpi.metric}</div>
+                  <div className="text-lg font-bold text-white">{kpi.current} → {kpi.target}</div>
+                  <div className="text-[10px] text-slate-500">{kpi.unit}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Strategy */}
+            <p className="text-xs text-slate-400 mb-3">📋 {goalPlan.strategy}</p>
+
+            {/* Content mix */}
+            {goalPlan.content_mix && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {Object.entries(goalPlan.content_mix).map(([ch, mix]: [string, any]) => (
+                  <div key={ch} className="px-3 py-1.5 bg-[#0a0e17] rounded-lg text-xs">
+                    <span>{CHANNELS[ch]?.emoji} </span>
+                    <span className="text-slate-300">{mix.posts_per_week}x/sem</span>
+                    <span className="text-slate-500 ml-1">({mix.formats?.join(", ")})</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleBuildSchedule}
+            className="w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold hover:bg-slate-200 transition"
+          >
+            🧠 Montar cronograma do mês
+          </button>
+        </div>
+      )}
+
+      {/* ═══ STAGE 3: APPROVE THEMES ═══ */}
+      {stage === 3 && !loading && schedule && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-white">📋 Pauta do mês — aprove os temas</h2>
+            <span className="text-xs text-slate-500">{approvedThemes.size}/{schedule.schedule?.length || 0} aprovados</span>
+          </div>
+
+          {/* Strategy notes */}
+          {schedule.strategy_notes && (
+            <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3 mb-4 text-xs text-indigo-300">
+              💡 {schedule.strategy_notes}
+            </div>
+          )}
+
+          {/* Weekly breakdown */}
+          {schedule.weekly_breakdown && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+              {Object.entries(schedule.weekly_breakdown).map(([week, data]: [string, any]) => (
+                <div key={week} className="bg-[#111827] border border-[#1e293b] rounded-lg p-3">
+                  <div className="text-[10px] text-slate-500 uppercase">{week.replace("week", "Sem ")}</div>
+                  <div className="text-xs text-white font-medium mt-1">{data.focus}</div>
+                  <div className="text-[10px] text-slate-500">{data.posts} posts</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Theme list */}
+          <div className="space-y-2 mb-4">
+            {(schedule.schedule || []).map((item: any) => {
+              const isApproved = approvedThemes.has(item.id);
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => toggleThemeApproval(item.id)}
+                  className={`w-full text-left p-3 md:p-4 rounded-xl border transition ${
+                    isApproved ? "bg-emerald-500/5 border-emerald-500/20" : "bg-[#111827] border-[#1e293b] hover:border-[#334155]"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] ${
+                      isApproved ? "border-emerald-500 bg-emerald-500 text-white" : "border-[#334155]"
+                    }`}>
+                      {isApproved ? "✓" : ""}
+                    </span>
+                    <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
+                    <span className="text-xs text-white font-medium flex-1">{item.theme}</span>
+                    <span className="text-[10px] text-slate-500">{item.date}</span>
+                  </div>
+                  <div className="ml-7 flex flex-wrap gap-2 items-center">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e293b] text-slate-400">{item.format}</span>
+                    <span className="text-[10px]" style={{ color: PILLARS[item.pillar]?.color }}>{PILLARS[item.pillar]?.label}</span>
+                    {item.time && <span className="text-[10px] text-slate-500">⏰ {item.time}</span>}
+                    {item.is_opportunistic && <span className="text-[10px] text-amber-400">🔥 oportunístico</span>}
+                  </div>
+                  {item.briefing && (
+                    <p className="ml-7 mt-1 text-[11px] text-slate-500">{item.briefing.slice(0, 120)}...</p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Select all / none */}
+          <div className="flex gap-2 mb-3">
+            <button onClick={() => setApprovedThemes(new Set((schedule.schedule || []).map((s: any) => s.id)))}
+              className="px-3 py-1.5 text-xs text-slate-400 border border-[#334155] rounded-lg hover:text-white transition">
+              Selecionar todos
+            </button>
+            <button onClick={() => setApprovedThemes(new Set())}
+              className="px-3 py-1.5 text-xs text-slate-400 border border-[#334155] rounded-lg hover:text-white transition">
+              Limpar seleção
+            </button>
+          </div>
+
+          <button
+            onClick={handleProduceContent}
+            disabled={approvedThemes.size === 0}
+            className="w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold disabled:opacity-40 hover:bg-slate-200 transition"
+          >
+            ✍️ Produzir conteúdo ({approvedThemes.size} temas)
+          </button>
+        </div>
+      )}
+
+      {/* ═══ STAGE 4: CONTENT PRODUCED → REVIEW ═══ */}
+      {stage === 4 && !loading && (
+        <div>
+          <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 md:p-5 mb-4 text-center">
+            <div className="text-3xl mb-2">✅</div>
+            <h2 className="text-lg font-semibold text-white mb-2">Conteúdo produzido!</h2>
+            <p className="text-sm text-slate-300 mb-1">{approvedThemes.size} posts gerados e enviados pra revisão.</p>
+            <p className="text-xs text-slate-500">Revise, edite e aprove cada um. O que for aprovado entra na fila de publicação automática.</p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <button onClick={() => onNavigate("review")} className="w-full px-5 py-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-sm font-semibold hover:bg-amber-500/20 transition">
+              ✓ Ir pra Revisão ({engine.pendingReview.length} pendentes)
+            </button>
+            <button onClick={() => onNavigate("calendar")} className="w-full px-5 py-3 bg-[#111827] text-slate-300 border border-[#1e293b] rounded-lg text-sm font-medium hover:border-[#334155] transition">
+              📅 Ver no Cronograma
+            </button>
+            <button onClick={() => setStage(5)} className="w-full px-5 py-3 bg-[#111827] text-slate-400 border border-[#1e293b] rounded-lg text-xs hover:border-[#334155] transition">
+              Pular pra publicação →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ STAGE 5: PUBLISHING STATUS ═══ */}
+      {stage === 5 && !loading && (
+        <div>
+          <h2 className="text-sm font-semibold text-white mb-3">🚀 Status de publicação</h2>
+
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+            <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
+              <div className="text-2xl font-bold text-emerald-400">{engine.contentList.filter((c) => c.status === "approved").length}</div>
+              <div className="text-[10px] text-slate-500 uppercase">Prontos pra postar</div>
+            </div>
+            <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
+              <div className="text-2xl font-bold text-purple-400">{engine.contentList.filter((c) => c.status === "published").length}</div>
+              <div className="text-[10px] text-slate-500 uppercase">Publicados</div>
+            </div>
+            <div className="bg-[#111827] border border-amber-500/10 rounded-xl p-4 text-center">
+              <div className="text-2xl font-bold text-amber-400">{engine.pendingReview.length}</div>
+              <div className="text-[10px] text-slate-500 uppercase">Aguardando revisão</div>
+            </div>
+          </div>
+
+          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 mb-4">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Fila de publicação</h3>
+            {engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at).length === 0 ? (
+              <p className="text-xs text-slate-500">Nenhum post aprovado com data agendada. Aprove posts na Revisão.</p>
+            ) : (
+              engine.contentList.filter((c) => c.status === "approved" && c.scheduled_at)
+                .sort((a, b) => (a.scheduled_at || "").localeCompare(b.scheduled_at || ""))
+                .slice(0, 10)
+                .map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 py-2 border-b border-[#1e293b] last:border-0">
+                    <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
+                    <span className="text-xs text-slate-300 flex-1 truncate">{item.body?.slice(0, 60)}...</span>
+                    <span className="text-[10px] text-slate-500">{item.scheduled_at ? new Date(item.scheduled_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "sem data"}</span>
+                    <span className="text-[10px] text-emerald-400">pronto</span>
+                  </div>
+                ))
+            )}
+          </div>
+
+          <p className="text-xs text-slate-500 text-center mb-4">
+            ⚡ O cron roda a cada 15 minutos e publica automaticamente posts aprovados no horário agendado.
+          </p>
+
+          <button onClick={() => setStage(6)} className="w-full px-5 py-3 bg-[#111827] text-slate-300 border border-[#1e293b] rounded-lg text-sm font-medium hover:border-[#334155] transition">
+            📊 Ver progresso vs meta →
+          </button>
+        </div>
+      )}
+
+      {/* ═══ STAGE 6: MONITORING & REPORT ═══ */}
+      {stage === 6 && !loading && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-white">📊 Progresso vs Meta</h2>
+            <button onClick={handleProgressReport} className="px-3 py-1.5 bg-white text-[#0a0e17] rounded-lg text-xs font-semibold hover:bg-slate-200 transition">
+              🔄 Atualizar relatório
+            </button>
+          </div>
+
+          {/* Goal reminder */}
+          {goalPlan && (
+            <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-3 mb-4 text-xs text-indigo-300">
+              🎯 <strong>Meta:</strong> {goalPlan.interpreted_goal}
+            </div>
+          )}
+
+          {/* Current metrics */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+            {[
+              { n: published.length, l: "Publicados", c: "text-white" },
+              { n: `${avgEngagement.toFixed(1)}%`, l: "Engajamento", c: "text-emerald-400" },
+              { n: totalImpressions > 1000 ? `${(totalImpressions / 1000).toFixed(1)}k` : totalImpressions, l: "Impressões", c: "text-blue-400" },
+              { n: engine.pendingReview.length, l: "Pendentes", c: "text-amber-400" },
+            ].map((s, i) => (
+              <div key={i} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3 text-center">
+                <div className={`text-lg font-bold tracking-tight ${s.c}`}>{s.n}</div>
+                <div className="text-[10px] text-slate-500 uppercase">{s.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* AI Report */}
+          {progressReport ? (
+            <div className="space-y-3">
+              <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
+                <p className="text-sm text-slate-300 leading-relaxed">{progressReport.summary}</p>
+                {progressReport.confidence_score !== undefined && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500">Confiança:</span>
+                    <div className="flex-1 h-1.5 bg-[#1e293b] rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${progressReport.confidence_score * 100}%`, background: progressReport.confidence_score > 0.7 ? "#10b981" : progressReport.confidence_score > 0.4 ? "#f59e0b" : "#ef4444" }} />
+                    </div>
+                    <span className="text-[10px] text-slate-400">{Math.round(progressReport.confidence_score * 100)}%</span>
+                  </div>
+                )}
+              </div>
+
+              {/* KPI progress */}
+              {progressReport.goal_progress?.length > 0 && (
+                <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Progresso dos KPIs</h3>
+                  {progressReport.goal_progress.map((kpi: any, i: number) => (
+                    <div key={i} className="mb-3 last:mb-0">
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-slate-300">{kpi.kpi}</span>
+                        <span className={kpi.on_track ? "text-emerald-400" : "text-amber-400"}>
+                          {kpi.current}/{kpi.target} ({kpi.pct}%)
+                        </span>
+                      </div>
+                      <div className="h-2 bg-[#1e293b] rounded-full overflow-hidden">
+                        <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(kpi.pct, 100)}%`, background: kpi.on_track ? "#10b981" : "#f59e0b" }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* What worked / adjust */}
+              {(progressReport.what_worked?.length > 0 || progressReport.what_to_adjust?.length > 0) && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {progressReport.what_worked?.length > 0 && (
+                    <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-emerald-400 mb-2">✅ O que funcionou</h3>
+                      {progressReport.what_worked.map((w: string, i: number) => (
+                        <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>
+                      ))}
+                    </div>
+                  )}
+                  {progressReport.what_to_adjust?.length > 0 && (
+                    <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+                      <h3 className="text-xs font-semibold text-amber-400 mb-2">⚠️ Ajustar</h3>
+                      {progressReport.what_to_adjust.map((w: string, i: number) => (
+                        <p key={i} className="text-xs text-slate-300 mb-1">• {w}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Next week focus */}
+              {progressReport.next_week_focus && (
+                <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 text-center">
+                  <span className="text-[10px] text-slate-500 uppercase">Foco da próxima semana</span>
+                  <p className="text-sm text-white mt-1">{progressReport.next_week_focus}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-center py-8 bg-[#111827] border border-dashed border-[#1e293b] rounded-xl">
+              <p className="text-sm text-slate-500 mb-3">Clique em "Atualizar relatório" pra ver o progresso vs meta.</p>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
