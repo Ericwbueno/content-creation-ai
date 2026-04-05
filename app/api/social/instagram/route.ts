@@ -6,14 +6,24 @@ const FB_TOKEN_URL = `https://graph.facebook.com/${API_VERSION}/oauth/access_tok
 const GRAPH_API = `https://graph.facebook.com/${API_VERSION}`;
 const PUBLISH_LIMIT_24H = 50;
 
+function getBaseUrl(req: NextRequest): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  }
+  const url = new URL(req.url);
+  return `${url.protocol}//${url.host}`;
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action");
+  const baseUrl = getBaseUrl(req);
+  const redirectUri = `${baseUrl}/api/social/instagram?action=callback`;
 
   if (action === "auth") {
     const params = new URLSearchParams({
       client_id: process.env.FACEBOOK_APP_ID || "",
-      redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL}/api/social/instagram?action=callback`,
+      redirect_uri: redirectUri,
       scope: [
         "instagram_basic",
         "instagram_content_publish",
@@ -39,7 +49,7 @@ export async function GET(req: NextRequest) {
           new URLSearchParams({
             client_id: process.env.FACEBOOK_APP_ID || "",
             client_secret: process.env.FACEBOOK_APP_SECRET || "",
-            redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL}/api/social/instagram?action=callback`,
+            redirect_uri: redirectUri,
             code,
           })
       );
@@ -47,7 +57,7 @@ export async function GET(req: NextRequest) {
 
       if (shortToken.error) {
         return NextResponse.redirect(
-          `${process.env.NEXT_PUBLIC_APP_URL}?instagram_error=${encodeURIComponent(shortToken.error.message)}`
+          `${baseUrl}?instagram_error=${encodeURIComponent(shortToken.error.message)}`
         );
       }
 
@@ -64,7 +74,7 @@ export async function GET(req: NextRequest) {
 
       if (longToken.error) {
         return NextResponse.redirect(
-          `${process.env.NEXT_PUBLIC_APP_URL}?instagram_error=${encodeURIComponent(longToken.error.message)}`
+          `${baseUrl}?instagram_error=${encodeURIComponent(longToken.error.message)}`
         );
       }
 
@@ -73,7 +83,7 @@ export async function GET(req: NextRequest) {
       ).toISOString();
 
       return NextResponse.redirect(
-        `${process.env.NEXT_PUBLIC_APP_URL}?` +
+        `${baseUrl}?` +
           new URLSearchParams({
             instagram_token: longToken.access_token,
             instagram_expires_at: expiresAt,
@@ -81,7 +91,7 @@ export async function GET(req: NextRequest) {
       );
     } catch (error: any) {
       return NextResponse.redirect(
-        `${process.env.NEXT_PUBLIC_APP_URL}?instagram_error=${encodeURIComponent(error.message)}`
+        `${baseUrl}?instagram_error=${encodeURIComponent(error.message)}`
       );
     }
   }

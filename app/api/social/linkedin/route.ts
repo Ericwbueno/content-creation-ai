@@ -4,16 +4,27 @@ const LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization";
 const LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken";
 const LINKEDIN_API = "https://api.linkedin.com";
 
+function getBaseUrl(req: NextRequest): string {
+  // Prefer explicit env var, fall back to request origin
+  if (process.env.NEXT_PUBLIC_APP_URL) {
+    return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  }
+  const url = new URL(req.url);
+  return `${url.protocol}//${url.host}`;
+}
+
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const action = searchParams.get("action");
+  const baseUrl = getBaseUrl(req);
+  const redirectUri = `${baseUrl}/api/social/linkedin?action=callback`;
 
   if (action === "auth") {
     const params = new URLSearchParams({
       response_type: "code",
       client_id: process.env.LINKEDIN_CLIENT_ID || "",
-      redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL}/api/social/linkedin?action=callback`,
-      scope: "openid profile email w_member_social r_member_social",
+      redirect_uri: redirectUri,
+      scope: "openid profile email w_member_social",
     });
     return NextResponse.redirect(`${LINKEDIN_AUTH_URL}?${params}`);
   }
@@ -24,7 +35,7 @@ export async function GET(req: NextRequest) {
 
     if (error) {
       return NextResponse.redirect(
-        `${process.env.NEXT_PUBLIC_APP_URL}?linkedin_error=${encodeURIComponent(searchParams.get("error_description") || error)}`
+        `${baseUrl}?linkedin_error=${encodeURIComponent(searchParams.get("error_description") || error)}`
       );
     }
 
@@ -41,7 +52,7 @@ export async function GET(req: NextRequest) {
           code,
           client_id: process.env.LINKEDIN_CLIENT_ID || "",
           client_secret: process.env.LINKEDIN_CLIENT_SECRET || "",
-          redirect_uri: `${process.env.NEXT_PUBLIC_APP_URL}/api/social/linkedin?action=callback`,
+          redirect_uri: redirectUri,
         }),
       });
 
@@ -49,15 +60,14 @@ export async function GET(req: NextRequest) {
 
       if (tokens.error) {
         return NextResponse.redirect(
-          `${process.env.NEXT_PUBLIC_APP_URL}?linkedin_error=${encodeURIComponent(tokens.error_description || tokens.error)}`
+          `${baseUrl}?linkedin_error=${encodeURIComponent(tokens.error_description || tokens.error)}`
         );
       }
 
-      // LinkedIn access tokens last 60 days, refresh tokens 365 days
       const expiresAt = new Date(Date.now() + (tokens.expires_in || 5184000) * 1000).toISOString();
 
       return NextResponse.redirect(
-        `${process.env.NEXT_PUBLIC_APP_URL}?` +
+        `${baseUrl}?` +
           new URLSearchParams({
             linkedin_token: tokens.access_token,
             linkedin_expires_at: expiresAt,
@@ -66,7 +76,7 @@ export async function GET(req: NextRequest) {
       );
     } catch (error: any) {
       return NextResponse.redirect(
-        `${process.env.NEXT_PUBLIC_APP_URL}?linkedin_error=${encodeURIComponent(error.message)}`
+        `${baseUrl}?linkedin_error=${encodeURIComponent(error.message)}`
       );
     }
   }
