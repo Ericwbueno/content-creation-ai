@@ -141,6 +141,11 @@ export default function Home() {
             ) : null}
           </button>
         ))}
+        <p className="mt-auto pt-6 px-3 text-[10px] text-slate-600 leading-relaxed border-t border-[#1e293b]/60">
+          {engine.persistence === "supabase"
+            ? "Dados no Supabase (conteúdo, voz, metas, temas). Deploy não apaga."
+            : "Configure NEXT_PUBLIC_SUPABASE_* para gravar na nuvem; senão os dados ficam só neste navegador."}
+        </p>
       </nav>
 
       {/* MAIN */}
@@ -2652,7 +2657,10 @@ function LLMConfigTab() {
       {/* API KEYS */}
       <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-5 mb-4">
         <h3 className="text-sm font-semibold text-white mb-1">API Keys</h3>
-        <p className="text-xs text-slate-500 mb-4">Chaves ficam salvas apenas no seu browser (localStorage). Em produção, use variáveis de ambiente.</p>
+        <p className="text-xs text-slate-500 mb-4">
+          Em produção, configure as chaves no painel do host (Vercel → Environment Variables): elas não mudam a cada deploy.
+          O servidor usa a env primeiro; o que você colar aqui fica só neste navegador (útil para testes locais).
+        </p>
 
         {PROVIDERS.map((provider) => {
           const hasKey = !!config.apiKeys[provider.id];

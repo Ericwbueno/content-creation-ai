@@ -13,9 +13,9 @@ CREATE TABLE voice_profiles (
   version INT DEFAULT 0
 );
 
--- Content (posts)
+-- Content (posts) — TEXT id matches app-generated keys (timestamp-based, agent-*, etc.)
 CREATE TABLE content (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   channel TEXT NOT NULL CHECK (channel IN ('linkedin', 'twitter', 'instagram')),
@@ -35,7 +35,7 @@ CREATE TABLE content (
 CREATE TABLE feedback (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now(),
-  content_id UUID REFERENCES content(id) ON DELETE CASCADE,
+  content_id TEXT REFERENCES content(id) ON DELETE CASCADE,
   type TEXT CHECK (type IN ('approved', 'rejected', 'edited')),
   original_text TEXT,
   edited_text TEXT,
@@ -48,7 +48,7 @@ CREATE TABLE feedback (
 CREATE TABLE analytics (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now(),
-  content_id UUID REFERENCES content(id) ON DELETE CASCADE,
+  content_id TEXT REFERENCES content(id) ON DELETE CASCADE,
   channel TEXT,
   impressions INT DEFAULT 0,
   likes INT DEFAULT 0,
@@ -57,12 +57,13 @@ CREATE TABLE analytics (
   saves INT DEFAULT 0,
   clicks INT DEFAULT 0,
   engagement_rate FLOAT DEFAULT 0,
-  fetched_at TIMESTAMPTZ DEFAULT now()
+  fetched_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (content_id)
 );
 
 -- Goals
 CREATE TABLE goals (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now(),
   period_start DATE,
   period_end DATE,
@@ -77,7 +78,7 @@ CREATE TABLE goals (
 
 -- Themes
 CREATE TABLE themes (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  id TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT now(),
   title TEXT NOT NULL,
   hook TEXT,

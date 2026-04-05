@@ -1,35 +1,21 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createBrowserClient } from "@/lib/supabase";
 import type { VoiceProfile, Goal } from "@/lib/voice-engine";
+import type { ContentItem, Theme } from "@/lib/engine-types";
+import {
+  isBrowserSupabaseConfigured,
+  ensureVoiceRow,
+  loadCloudState,
+  migrateLocalStorageToSupabase,
+  voiceToUpdate,
+  contentToInsert,
+  goalToRow,
+  themeToRow,
+} from "@/lib/supabase-persist";
 
-export interface ContentItem {
-  id: string;
-  created_at: string;
-  scheduled_at?: string;
-  channel: string;
-  pillar: string;
-  status: "draft" | "pending_review" | "approved" | "published" | "rejected";
-  body: string;
-  original_body?: string;
-  theme: string;
-  rating?: number;
-  feedback_note?: string;
-  voice_version?: number;
-}
-
-export interface Theme {
-  id: string;
-  title: string;
-  hook: string;
-  pillar: string;
-  source: string;
-  source_url?: string;
-  relevance: number;
-  curated: boolean;
-  used: boolean;
-}
+export type { ContentItem, Theme } from "@/lib/engine-types";
 
 const DEFAULT_VOICE: VoiceProfile = {
   rules: [],
@@ -39,51 +25,169 @@ const DEFAULT_VOICE: VoiceProfile = {
   version: 0,
 };
 
-// For MVP, we use Supabase if configured, otherwise localStorage fallback
-function useLocalStorage<T>(key: string, initial: T) {
-  const [data, setData] = useState<T>(initial);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) setData(JSON.parse(stored));
-    } catch {}
-    setLoaded(true);
-  }, [key]);
-
-  const save = useCallback(
-    (newData: T | ((prev: T) => T)) => {
-      setData((prev) => {
-        const resolved =
-          typeof newData === "function"
-            ? (newData as (prev: T) => T)(prev)
-            : newData;
-        try {
-          localStorage.setItem(key, JSON.stringify(resolved));
-        } catch {}
-        return resolved;
-      });
-    },
-    [key]
-  );
-
-  return [data, save, loaded] as const;
-}
+const LS = {
+  voice: "ce-voice-profile",
+  content: "ce-content",
+  goals: "ce-goals",
+  themes: "ce-themes",
+} as const;
 
 export function useContentEngine() {
-  const [voiceProfile, setVoiceProfile, vpLoaded] =
-    useLocalStorage<VoiceProfile>("ce-voice-profile", DEFAULT_VOICE);
-  const [contentList, setContentList, clLoaded] = useLocalStorage<
-    ContentItem[]
-  >("ce-content", []);
-  const [goals, setGoals, glLoaded] = useLocalStorage<Goal[]>("ce-goals", []);
-  const [themes, setThemes, thLoaded] = useLocalStorage<Theme[]>(
-    "ce-themes",
+  const useCloudRef = useRef(isBrowserSupabaseConfigured());
+  const useCloud = useCloudRef.current;
+
+  const [voiceProfile, setVoiceProfileState] =
+    useState<VoiceProfile>(DEFAULT_VOICE);
+  const [contentList, setContentListState] = useState<ContentItem[]>([]);
+  const [goals, setGoalsState] = useState<Goal[]>([]);
+  const [themes, setThemesState] = useState<Theme[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  const voiceRowIdRef = useRef<string | null>(null);
+  const voiceHydratedRef = useRef(false);
+  const voicePersistSkipRef = useRef(true);
+
+  // --- Hydrate: Supabase ---
+  useEffect(() => {
+    if (!useCloud) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const sb = createBrowserClient();
+        const { id: voiceId, profile } = await ensureVoiceRow(sb);
+        if (cancelled) return;
+        voiceRowIdRef.current = voiceId;
+        setVoiceProfileState(profile);
+
+        let { contentList: cl, goals: gl, themes: th } =
+          await loadCloudState(sb);
+        if (cancelled) return;
+
+        const noUserTables =
+          cl.length === 0 && gl.length === 0 && th.length === 0;
+
+        if (noUserTables) {
+          await migrateLocalStorageToSupabase(sb, voiceId);
+          if (cancelled) return;
+          const again = await loadCloudState(sb);
+          cl = again.contentList;
+          gl = again.goals;
+          th = again.themes;
+          const { data: vrow } = await sb
+            .from("voice_profiles")
+            .select("*")
+            .eq("id", voiceId)
+            .single();
+          if (vrow && !cancelled) {
+            const p = vrow as Record<string, unknown>;
+            setVoiceProfileState({
+              rules: (p.rules as string[]) || [],
+              anti_patterns: (p.anti_patterns as string[]) || [],
+              vocabulary: (p.vocabulary as string[]) || [],
+              examples:
+                (p.examples as VoiceProfile["examples"]) || [],
+              version: typeof p.version === "number" ? p.version : 0,
+            });
+          }
+        }
+
+        if (cancelled) return;
+        setContentListState(cl);
+        setGoalsState(gl);
+        setThemesState(th);
+        voiceHydratedRef.current = true;
+        voicePersistSkipRef.current = true;
+      } catch (e) {
+        console.error("Supabase load failed:", e);
+        voiceHydratedRef.current = true;
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [useCloud]);
+
+  // --- Hydrate: localStorage ---
+  useEffect(() => {
+    if (useCloud) return;
+    try {
+      const v = localStorage.getItem(LS.voice);
+      if (v) setVoiceProfileState({ ...DEFAULT_VOICE, ...JSON.parse(v) });
+      const c = localStorage.getItem(LS.content);
+      if (c) setContentListState(JSON.parse(c));
+      const g = localStorage.getItem(LS.goals);
+      if (g) setGoalsState(JSON.parse(g));
+      const t = localStorage.getItem(LS.themes);
+      if (t) setThemesState(JSON.parse(t));
+    } catch {}
+    setLoaded(true);
+  }, [useCloud]);
+
+  // --- Mirror localStorage (offline / no Supabase) ---
+  useEffect(() => {
+    if (useCloud || !loaded) return;
+    try {
+      localStorage.setItem(LS.voice, JSON.stringify(voiceProfile));
+    } catch {}
+  }, [voiceProfile, useCloud, loaded]);
+
+  useEffect(() => {
+    if (useCloud || !loaded) return;
+    try {
+      localStorage.setItem(LS.content, JSON.stringify(contentList));
+    } catch {}
+  }, [contentList, useCloud, loaded]);
+
+  useEffect(() => {
+    if (useCloud || !loaded) return;
+    try {
+      localStorage.setItem(LS.goals, JSON.stringify(goals));
+    } catch {}
+  }, [goals, useCloud, loaded]);
+
+  useEffect(() => {
+    if (useCloud || !loaded) return;
+    try {
+      localStorage.setItem(LS.themes, JSON.stringify(themes));
+    } catch {}
+  }, [themes, useCloud, loaded]);
+
+  // --- Persist voice (Supabase) after user edits ---
+  useEffect(() => {
+    if (!useCloud || !loaded || !voiceRowIdRef.current || !voiceHydratedRef.current)
+      return;
+    if (voicePersistSkipRef.current) {
+      voicePersistSkipRef.current = false;
+      return;
+    }
+    const id = voiceRowIdRef.current;
+    const sb = createBrowserClient();
+    const t = window.setTimeout(() => {
+      void sb
+        .from("voice_profiles")
+        .update(voiceToUpdate(voiceProfile))
+        .eq("id", id)
+        .then(({ error }) => {
+          if (error) console.error("voice_profiles update:", error.message);
+        });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [voiceProfile, useCloud, loaded]);
+
+  const setVoiceProfile = useCallback(
+    (u: VoiceProfile | ((prev: VoiceProfile) => VoiceProfile)) => {
+      setVoiceProfileState((prev) =>
+        typeof u === "function" ? (u as (p: VoiceProfile) => VoiceProfile)(prev) : u
+      );
+    },
     []
   );
 
-  const loaded = vpLoaded && clLoaded && glLoaded && thLoaded;
+  const loadedAll = loaded;
   const activeGoal = goals.find((g) => g.status === "active") || null;
   const pendingReview = contentList.filter(
     (c) => c.status === "pending_review"
@@ -92,83 +196,103 @@ export function useContentEngine() {
     (c) => c.status === "approved" || c.status === "published"
   );
 
-  // --- CONTENT OPERATIONS ---
-
   const addContent = useCallback(
     (item: ContentItem) => {
-      setContentList((prev) => [item, ...prev]);
+      setContentListState((prev) => [item, ...prev]);
+      if (useCloud) {
+        const sb = createBrowserClient();
+        void sb
+          .from("content")
+          .insert(contentToInsert(item))
+          .then(({ error }) => {
+            if (error) console.error("content insert:", error.message);
+          });
+      }
     },
-    [setContentList]
+    [useCloud]
   );
 
   const updateContent = useCallback(
     (id: string, updates: Partial<ContentItem>) => {
-      setContentList((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
-      );
+      setContentListState((prev) => {
+        const next = prev.map((c) => (c.id === id ? { ...c, ...updates } : c));
+        const row = next.find((c) => c.id === id);
+        if (useCloud && row) {
+          const sb = createBrowserClient();
+          const payload = contentToInsert(row);
+          const { id: _cid, ...patch } = payload;
+          void sb
+            .from("content")
+            .update(patch)
+            .eq("id", id)
+            .then(({ error }) => {
+              if (error) console.error("content update:", error.message);
+            });
+        }
+        return next;
+      });
     },
-    [setContentList]
+    [useCloud]
   );
 
   const deleteContent = useCallback(
     (id: string) => {
-      setContentList((prev) => prev.filter((c) => c.id !== id));
+      setContentListState((prev) => prev.filter((c) => c.id !== id));
+      if (useCloud) {
+        const sb = createBrowserClient();
+        void sb
+          .from("content")
+          .delete()
+          .eq("id", id)
+          .then(({ error }) => {
+            if (error) console.error("content delete:", error.message);
+          });
+      }
     },
-    [setContentList]
+    [useCloud]
   );
-
-  // --- VOICE OPERATIONS ---
 
   const updateVoiceProfile = useCallback(
     (updates: Partial<VoiceProfile>) => {
-      setVoiceProfile((prev) => ({ ...prev, ...updates }));
+      setVoiceProfileState((prev) => ({ ...prev, ...updates }));
     },
-    [setVoiceProfile]
+    []
   );
 
-  const addVoiceRule = useCallback(
-    (rule: string) => {
-      setVoiceProfile((prev) => ({
-        ...prev,
-        rules: [...new Set([...prev.rules, rule])],
-      }));
-    },
-    [setVoiceProfile]
-  );
+  const addVoiceRule = useCallback((rule: string) => {
+    setVoiceProfileState((prev) => ({
+      ...prev,
+      rules: [...new Set([...prev.rules, rule])],
+    }));
+  }, []);
 
-  const addAntiPattern = useCallback(
-    (pattern: string) => {
-      setVoiceProfile((prev) => ({
-        ...prev,
-        anti_patterns: [...new Set([...prev.anti_patterns, pattern])],
-      }));
-    },
-    [setVoiceProfile]
-  );
+  const addAntiPattern = useCallback((pattern: string) => {
+    setVoiceProfileState((prev) => ({
+      ...prev,
+      anti_patterns: [...new Set([...prev.anti_patterns, pattern])],
+    }));
+  }, []);
 
-  const addVocabulary = useCallback(
-    (word: string) => {
-      setVoiceProfile((prev) => ({
-        ...prev,
-        vocabulary: [...new Set([...prev.vocabulary, word])],
-      }));
-    },
-    [setVoiceProfile]
-  );
+  const addVocabulary = useCallback((word: string) => {
+    setVoiceProfileState((prev) => ({
+      ...prev,
+      vocabulary: [...new Set([...prev.vocabulary, word])],
+    }));
+  }, []);
 
   const removeVoiceItem = useCallback(
     (field: "rules" | "anti_patterns" | "vocabulary", index: number) => {
-      setVoiceProfile((prev) => ({
+      setVoiceProfileState((prev) => ({
         ...prev,
-        [field]: prev[field].filter((_: any, i: number) => i !== index),
+        [field]: prev[field].filter((_: unknown, i: number) => i !== index),
       }));
     },
-    [setVoiceProfile]
+    []
   );
 
   const addGoldExample = useCallback(
     (text: string, rating: number, channel?: string) => {
-      setVoiceProfile((prev) => ({
+      setVoiceProfileState((prev) => ({
         ...prev,
         examples: [
           ...prev.examples,
@@ -177,73 +301,146 @@ export function useContentEngine() {
         version: prev.version + 1,
       }));
     },
-    [setVoiceProfile]
+    []
   );
 
   const resetVoice = useCallback(() => {
-    setVoiceProfile(DEFAULT_VOICE);
-  }, [setVoiceProfile]);
-
-  // --- GOAL OPERATIONS ---
+    setVoiceProfileState(DEFAULT_VOICE);
+    if (useCloud && voiceRowIdRef.current) {
+      const sb = createBrowserClient();
+      void sb
+        .from("voice_profiles")
+        .update(voiceToUpdate(DEFAULT_VOICE))
+        .eq("id", voiceRowIdRef.current);
+    }
+  }, [useCloud]);
 
   const addGoal = useCallback(
     (goal: Goal) => {
-      setGoals((prev) => [
-        goal,
-        ...prev.map((g) =>
-          g.status === "active" ? { ...g, status: "paused" as const } : g
-        ),
-      ]);
+      setGoalsState((prev) => {
+        const next = [
+          goal,
+          ...prev.map((g) =>
+            g.status === "active" ? { ...g, status: "paused" as const } : g
+          ),
+        ];
+        if (useCloud) {
+          const sb = createBrowserClient();
+          void sb
+            .from("goals")
+            .upsert(goalToRow(goal), { onConflict: "id" })
+            .then(({ error }) => {
+              if (error) console.error("goals upsert (add):", error.message);
+            });
+          for (const g of prev) {
+            if (g.status === "active" && g.id !== goal.id) {
+              void sb
+                .from("goals")
+                .update({ status: "paused" })
+                .eq("id", g.id);
+            }
+          }
+        }
+        return next;
+      });
     },
-    [setGoals]
+    [useCloud]
   );
 
   const toggleGoal = useCallback(
     (id: string) => {
-      setGoals((prev) =>
-        prev.map((g) => {
+      setGoalsState((prev) => {
+        const next = prev.map((g) => {
           if (g.id === id)
             return {
               ...g,
-              status: (g.status === "active" ? "paused" : "active") as any,
+              status: (g.status === "active" ? "paused" : "active") as Goal["status"],
             };
-          if (g.status === "active") return { ...g, status: "paused" as const };
+          if (g.status === "active")
+            return { ...g, status: "paused" as const };
           return g;
-        })
-      );
+        });
+        if (useCloud) {
+          const sb = createBrowserClient();
+          for (const g of next) {
+            void sb
+              .from("goals")
+              .update({ status: g.status })
+              .eq("id", g.id)
+              .then(({ error }) => {
+                if (error) console.error("goals update:", error.message);
+              });
+          }
+        }
+        return next;
+      });
     },
-    [setGoals]
+    [useCloud]
   );
 
   const removeGoal = useCallback(
     (id: string) => {
-      setGoals((prev) => prev.filter((g) => g.id !== id));
+      setGoalsState((prev) => prev.filter((g) => g.id !== id));
+      if (useCloud) {
+        const sb = createBrowserClient();
+        void sb
+          .from("goals")
+          .delete()
+          .eq("id", id)
+          .then(({ error }) => {
+            if (error) console.error("goals delete:", error.message);
+          });
+      }
     },
-    [setGoals]
+    [useCloud]
   );
-
-  // --- THEME OPERATIONS ---
 
   const addThemes = useCallback(
     (newThemes: Theme[]) => {
-      setThemes((prev) => [...newThemes, ...prev]);
+      const withIds = newThemes.map((t) => ({
+        ...t,
+        id: t.id || crypto.randomUUID(),
+      }));
+      setThemesState((prev) => [...withIds, ...prev]);
+      if (useCloud) {
+        const sb = createBrowserClient();
+        for (const t of withIds) {
+          void sb
+            .from("themes")
+            .upsert(themeToRow(t), { onConflict: "id" })
+            .then(({ error }) => {
+              if (error) console.error("themes upsert:", error.message);
+            });
+        }
+      }
     },
-    [setThemes]
+    [useCloud]
   );
 
   const curateTheme = useCallback(
     (id: string, curated: boolean) => {
-      setThemes((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, curated } : t))
-      );
+      setThemesState((prev) => {
+        const next = prev.map((t) => (t.id === id ? { ...t, curated } : t));
+        const row = next.find((t) => t.id === id);
+        if (useCloud && row) {
+          const sb = createBrowserClient();
+          void sb
+            .from("themes")
+            .update({ curated })
+            .eq("id", id)
+            .then(({ error }) => {
+              if (error) console.error("themes update:", error.message);
+            });
+        }
+        return next;
+      });
     },
-    [setThemes]
+    [useCloud]
   );
-
-  // --- API CALLS ---
 
   const generateContent = useCallback(
     async (theme: string, channels: string[]) => {
+      const ag = goals.find((g) => g.status === "active") || null;
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -251,14 +448,14 @@ export function useContentEngine() {
           theme,
           channels,
           voiceProfile,
-          activeGoal,
+          activeGoal: ag,
         }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       return data.results as Record<string, string>;
     },
-    [voiceProfile, activeGoal]
+    [voiceProfile, goals]
   );
 
   const analyzeFeedback = useCallback(
@@ -288,8 +485,6 @@ export function useContentEngine() {
     return data.themes || [];
   }, []);
 
-  // --- PHASE 2: IMAGE GENERATION ---
-
   const generateImage = useCallback(
     async (postBody: string, channel: string, customPrompt?: string) => {
       const res = await fetch("/api/generate-image", {
@@ -303,8 +498,6 @@ export function useContentEngine() {
     },
     []
   );
-
-  // --- PHASE 2: CAROUSEL GENERATION ---
 
   const generateCarousel = useCallback(
     async (theme: string, pillar: string, numSlides?: number) => {
@@ -326,10 +519,8 @@ export function useContentEngine() {
     [voiceProfile]
   );
 
-  // --- PHASE 2: ANALYTICS ---
-
   const analyzePerformance = useCallback(
-    async (contentWithMetrics: any[]) => {
+    async (contentWithMetrics: unknown[]) => {
       const res = await fetch("/api/analytics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -344,8 +535,6 @@ export function useContentEngine() {
     },
     [goals, voiceProfile]
   );
-
-  // --- PHASE 2: SOCIAL MEDIA ---
 
   const connectLinkedIn = useCallback(() => {
     window.location.href = "/api/social/linkedin?action=auth";
@@ -368,11 +557,15 @@ export function useContentEngine() {
   );
 
   const fetchInstagramMetrics = useCallback(
-    async (accessToken: string, action: string, extra?: any) => {
+    async (accessToken: string, action: string, extra?: Record<string, unknown>) => {
       const res = await fetch("/api/social/instagram", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accessToken, action, ...extra }),
+        body: JSON.stringify({
+          accessToken,
+          action,
+          ...(extra && typeof extra === "object" ? extra : {}),
+        }),
       });
       return res.json();
     },
@@ -380,8 +573,8 @@ export function useContentEngine() {
   );
 
   return {
-    // State
-    loaded,
+    loaded: loadedAll,
+    persistence: useCloud ? ("supabase" as const) : ("local" as const),
     voiceProfile,
     contentList,
     goals,
@@ -389,13 +582,9 @@ export function useContentEngine() {
     activeGoal,
     pendingReview,
     published,
-
-    // Content
     addContent,
     updateContent,
     deleteContent,
-
-    // Voice
     updateVoiceProfile,
     addVoiceRule,
     addAntiPattern,
@@ -404,22 +593,14 @@ export function useContentEngine() {
     addGoldExample,
     resetVoice,
     setVoiceProfile,
-
-    // Goals
     addGoal,
     toggleGoal,
     removeGoal,
-
-    // Themes
     addThemes,
     curateTheme,
-
-    // API (Phase 1)
     generateContent,
     analyzeFeedback,
     researchThemes,
-
-    // API (Phase 2)
     generateImage,
     generateCarousel,
     analyzePerformance,
@@ -427,17 +608,27 @@ export function useContentEngine() {
     connectInstagram,
     fetchLinkedInMetrics,
     fetchInstagramMetrics,
-
-    // API (Phase 3 — Publishing)
-    publishPost: async (post: string, platforms: string[], opts?: { mediaUrls?: string[]; scheduledDate?: string; isVideo?: boolean }) => {
+    publishPost: async (
+      post: string,
+      platforms: string[],
+      opts?: {
+        mediaUrls?: string[];
+        scheduledDate?: string;
+        isVideo?: boolean;
+      }
+    ) => {
       const res = await fetch("/api/publish", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: opts?.scheduledDate ? "schedule" : "publish", post, platforms, ...opts }),
+        body: JSON.stringify({
+          action: opts?.scheduledDate ? "schedule" : "publish",
+          post,
+          platforms,
+          ...opts,
+        }),
       });
       return res.json();
     },
-
     checkPublishConfig: async () => {
       const res = await fetch("/api/publish", {
         method: "POST",
@@ -446,7 +637,6 @@ export function useContentEngine() {
       });
       return res.json();
     },
-
     getPublishHistory: async () => {
       const res = await fetch("/api/publish", {
         method: "POST",
@@ -455,7 +645,6 @@ export function useContentEngine() {
       });
       return res.json();
     },
-
     getPostAnalytics: async (postId: string, platforms: string[]) => {
       const res = await fetch("/api/publish", {
         method: "POST",
@@ -464,7 +653,6 @@ export function useContentEngine() {
       });
       return res.json();
     },
-
     generateReport: async (period: "week" | "month") => {
       const res = await fetch("/api/report", {
         method: "POST",
@@ -473,17 +661,23 @@ export function useContentEngine() {
       });
       return res.json();
     },
-
-    // API (Phase 4 — Video)
-    generateVideoScript: async (postBody: string, channel: string, format?: string) => {
+    generateVideoScript: async (
+      postBody: string,
+      channel: string,
+      format?: string
+    ) => {
       const res = await fetch("/api/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "script", postBody, channel, format }),
+        body: JSON.stringify({
+          action: "script",
+          postBody,
+          channel,
+          format,
+        }),
       });
       return res.json();
     },
-
     generateVideoPrompt: async (postBody: string, format?: string) => {
       const res = await fetch("/api/generate-video", {
         method: "POST",
@@ -492,8 +686,13 @@ export function useContentEngine() {
       });
       return res.json();
     },
-
-    generateVideo: async (opts: { customPrompt?: string; imageUrl?: string; provider?: string; duration?: number; format?: string }) => {
+    generateVideo: async (opts: {
+      customPrompt?: string;
+      imageUrl?: string;
+      provider?: string;
+      duration?: number;
+      format?: string;
+    }) => {
       const res = await fetch("/api/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
