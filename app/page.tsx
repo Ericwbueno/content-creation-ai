@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useContentEngine, ContentItem, Theme } from "./components/useContentEngine";
 import type { Goal } from "@/lib/voice-engine";
 import { PROVIDERS, DEFAULT_ROUTES, DEFAULT_CONFIG, type LLMConfig, type TaskRoute } from "@/lib/llm-router";
@@ -115,6 +115,22 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const engine = useContentEngine();
 
+  // Global LinkedIn token state — captured on OAuth callback regardless of active tab
+  const [linkedInToken, setLinkedInToken] = useState(() => {
+    try { return localStorage.getItem("ce-linkedin-token") || ""; } catch { return ""; }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const liToken = params.get("linkedin_token");
+    if (liToken) {
+      setLinkedInToken(liToken);
+      try { localStorage.setItem("ce-linkedin-token", liToken); } catch {}
+      window.history.replaceState({}, "", "/");
+    }
+  }, []);
+
   if (!engine.loaded) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-[#0a0e17]">
@@ -228,7 +244,7 @@ export default function Home() {
       <main className="flex-1 p-4 pt-16 md:p-8 md:pt-8 max-w-3xl overflow-y-auto overflow-x-hidden">
         {tab === "pipeline" && <PipelineTab engine={engine} onNavigate={setTab} />}
         {tab === "calendar" && <CalendarTab engine={engine} onNavigate={setTab} />}
-        {tab === "review" && <ReviewTab engine={engine} />}
+        {tab === "review" && <ReviewTab engine={engine} linkedInToken={linkedInToken} setLinkedInToken={setLinkedInToken} />}
         {tab === "analytics" && <AnalyticsTab engine={engine} />}
         {tab === "voice" && <VoiceTab engine={engine} />}
         {tab === "video" && <VideoTab engine={engine} />}
@@ -1447,13 +1463,23 @@ function GenerateTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
 }
 
 // ===== REVIEW TAB =====
-function ReviewTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
+function ReviewTab({
+  engine,
+  linkedInToken,
+  setLinkedInToken,
+}: {
+  engine: ReturnType<typeof useContentEngine>;
+  linkedInToken: string;
+  setLinkedInToken: (t: string) => void;
+}) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [rating, setRating] = useState(0);
   const [feedbackNote, setFeedbackNote] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [lastInsight, setLastInsight] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [publishResult, setPublishResult] = useState<Record<string, "ok" | "error">>({});
 
   const pending = engine.pendingReview;
   const reviewed = engine.contentList.filter((c) => c.status === "approved" || c.status === "rejected");
@@ -1511,9 +1537,97 @@ function ReviewTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) 
     setFeedbackNote("");
   };
 
+  const publishToLinkedIn = async (item: ContentItem) => {
+    if (!linkedInToken) return;
+    setPublishingId(item.id);
+    try {
+      // Get personal profile (sub = member ID)
+      const profileRes = await fetch("/api/social/linkedin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accessToken: linkedInToken, action: "profile" }),
+      });
+      const profileData = await profileRes.json();
+
+      if (profileData.needsReauth || !profileData.profile) {
+        // Token expired — clear and reconnect
+        setLinkedInToken("");
+        try { localStorage.removeItem("ce-linkedin-token"); } catch {}
+        setPublishResult((p) => ({ ...p, [item.id]: "error" }));
+        alert("Token do LinkedIn expirado. Por favor, conecte novamente.");
+        return;
+      }
+
+      const personUrn = `urn:li:person:${profileData.profile.sub}`;
+
+      const publishRes = await fetch("/api/social/linkedin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accessToken: linkedInToken,
+          action: "publish",
+          personUrn,
+          text: item.body,
+        }),
+      });
+      const publishData = await publishRes.json();
+
+      if (!publishRes.ok || !publishData.success) {
+        throw new Error(publishData.error || "Falha ao publicar");
+      }
+
+      engine.updateContent(item.id, { status: "published" });
+      setPublishResult((p) => ({ ...p, [item.id]: "ok" }));
+    } catch (err: any) {
+      setPublishResult((p) => ({ ...p, [item.id]: "error" }));
+      alert("Erro ao publicar no LinkedIn: " + err.message);
+    } finally {
+      setPublishingId(null);
+    }
+  };
+
+  const connectLinkedIn = async () => {
+    const res = await fetch("/api/social/linkedin?action=check");
+    const data = await res.json();
+    if (data.configured) {
+      window.location.href = "/api/social/linkedin?action=auth";
+    } else {
+      alert("LinkedIn não configurado. Adicione LINKEDIN_CLIENT_ID e LINKEDIN_CLIENT_SECRET nas variáveis de ambiente da Vercel.");
+    }
+  };
+
   return (
     <div className="animate-fade-in">
-      <h1 className="text-xl font-bold text-white tracking-tight mb-6">Revisão</h1>
+      <h1 className="text-xl font-bold text-white tracking-tight mb-4">Revisão</h1>
+
+      {/* LinkedIn connect banner */}
+      <div className="flex items-center gap-3 bg-[#111827] border border-[#1e293b] rounded-xl px-4 py-3 mb-5">
+        <span className="text-lg">💼</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-white">LinkedIn pessoal</p>
+          <p className="text-[11px] text-slate-500">
+            {linkedInToken ? "Conectado — publique posts aprovados direto no seu perfil" : "Conecte para publicar direto no seu perfil pessoal"}
+          </p>
+        </div>
+        {linkedInToken ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-emerald-400 font-medium">✓ Conectado</span>
+            <button
+              onClick={() => { setLinkedInToken(""); try { localStorage.removeItem("ce-linkedin-token"); } catch {} }}
+              className="text-[11px] text-slate-500 hover:text-red-400 transition"
+            >
+              Desconectar
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={connectLinkedIn}
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold transition shrink-0"
+          >
+            Conectar
+          </button>
+        )}
+      </div>
 
       {lastInsight && (
         <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4 mb-4 text-sm text-emerald-300 flex items-start gap-2 relative">
@@ -1630,8 +1744,72 @@ function ReviewTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) 
           <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
             Já revisados ({reviewed.length})
           </h2>
-          {reviewed.slice(0, 5).map((item) => (
-            <ContentPreviewCard key={item.id} item={item} />
+          {reviewed.slice(0, 8).map((item) => (
+            <div key={item.id} className="bg-[#111827] border border-[#1e293b] rounded-xl p-3.5 mb-2">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-sm">{CHANNELS[item.channel]?.emoji}</span>
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase"
+                  style={{ background: (STATUS_MAP[item.status] || STATUS_MAP.draft).color + "22", color: (STATUS_MAP[item.status] || STATUS_MAP.draft).color }}>
+                  {(STATUS_MAP[item.status] || STATUS_MAP.draft).label}
+                </span>
+                {item.pillar && (
+                  <span className="text-[11px]" style={{ color: PILLARS[item.pillar]?.color }}>
+                    {PILLARS[item.pillar]?.label}
+                  </span>
+                )}
+                <span className="text-[10px] text-slate-600 ml-auto">
+                  {item.scheduled_at || item.created_at ? new Date(item.scheduled_at || item.created_at).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }) : ""}
+                </span>
+              </div>
+              <p className="text-slate-400 text-xs leading-relaxed mb-2">{item.body?.slice(0, 140)}...</p>
+
+              {/* LinkedIn publish button — only for approved posts */}
+              {item.status === "approved" && item.channel === "linkedin" && (
+                <div className="border-t border-[#1e293b] pt-2 mt-1">
+                  {publishResult[item.id] === "ok" ? (
+                    <span className="text-[11px] text-emerald-400">✓ Publicado no LinkedIn!</span>
+                  ) : publishResult[item.id] === "error" ? (
+                    <span className="text-[11px] text-red-400">✕ Erro ao publicar</span>
+                  ) : linkedInToken ? (
+                    <button
+                      onClick={() => publishToLinkedIn(item)}
+                      disabled={publishingId === item.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/10 text-blue-400 border border-blue-600/20 rounded-lg text-xs font-medium hover:bg-blue-600/20 transition disabled:opacity-50"
+                    >
+                      {publishingId === item.id ? (
+                        <><span className="ai-spinner w-3 h-3" />Publicando...</>
+                      ) : (
+                        <>💼 Publicar no LinkedIn agora</>
+                      )}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={connectLinkedIn}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 transition"
+                    >
+                      💼 Conectar LinkedIn para publicar
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* For non-LinkedIn approved posts, show generic publish hint */}
+              {item.status === "approved" && item.channel !== "linkedin" && linkedInToken && (
+                <div className="border-t border-[#1e293b] pt-2 mt-1">
+                  <button
+                    onClick={() => publishToLinkedIn(item)}
+                    disabled={publishingId === item.id}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/10 text-blue-400 border border-blue-600/20 rounded-lg text-xs font-medium hover:bg-blue-600/20 transition disabled:opacity-50"
+                  >
+                    {publishingId === item.id ? (
+                      <><span className="ai-spinner w-3 h-3" />Publicando...</>
+                    ) : (
+                      <>💼 Publicar no LinkedIn</>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
