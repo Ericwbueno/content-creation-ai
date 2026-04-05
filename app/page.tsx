@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useContentEngine, ContentItem, Theme } from "./components/useContentEngine";
+import { useContentEngine, ContentItem, Theme, AgentSkill } from "./components/useContentEngine";
 import type { Goal } from "@/lib/voice-engine";
 import { PROVIDERS, DEFAULT_ROUTES, DEFAULT_CONFIG, type LLMConfig, type TaskRoute } from "@/lib/llm-router";
 
@@ -260,9 +260,12 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
   const [stage, setStage] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
   const [goalText, setGoalText] = useState("");
   const [goalPlan, setGoalPlan] = useState<any>(null);
-  const [schedule, setSchedule] = useState<any>(null);
+  const [schedule, setSchedule] = useState<any>(null); // { schedule: [...all weeks merged] }
+  const [weekSchedules, setWeekSchedules] = useState<Record<number, any>>({}); // per-week raw data
+  const [currentWeek, setCurrentWeek] = useState(0); // 0 = none done, 1-4 = weeks done
+  const [researchCache, setResearchCache] = useState(""); // reuse research text across weeks
   const [approvedThemes, setApprovedThemes] = useState<Set<string>>(new Set());
-  const [producedContent, setProducedContent] = useState<Record<string, string>>({});
+  const [producedContent, setProducedContent] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [progressReport, setProgressReport] = useState<any>(null);
@@ -333,10 +336,14 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
     }
   };
 
-  // ─── STAGE 2: Build Schedule ───
-  const handleBuildSchedule = async () => {
+  // ─── STAGE 2: Build Schedule Week by Week ───
+  const handleBuildWeek = async (week: number) => {
     setLoading(true);
-    setLoadingMessage("Pesquisando temas e montando cronograma... (1-2 min)");
+    setLoadingMessage(
+      week === 1
+        ? "Semana 1: pesquisando temas e montando pauta... (~30s)"
+        : `Semana ${week}: montando pauta com base na pesquisa já feita...`
+    );
     const now = new Date();
     try {
       const res = await fetch("/api/agent", {
@@ -353,18 +360,37 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
           voiceProfile: engine.voiceProfile,
           month: now.getMonth() + 1,
           year: now.getFullYear(),
+          week,
+          researchCache: week > 1 ? researchCache : "",
         }),
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || `Erro ${res.status} ao montar o cronograma.`);
+        alert(data.error || `Erro ${res.status} ao montar a Semana ${week}.`);
         return;
       }
-      if (data.schedule) {
-        setSchedule(data.schedule);
-        savePipeline(goalPlan, data.schedule);
-        setStage(3);
+
+      // Save research text for reuse in weeks 2-4
+      if (week === 1 && data.researchText) {
+        setResearchCache(data.researchText);
       }
+
+      const weekData = data.weekSchedule || {};
+      const newWeekSchedules = { ...weekSchedules, [week]: weekData };
+      setWeekSchedules(newWeekSchedules);
+      setCurrentWeek(week);
+
+      // Merge all weeks into a single schedule object
+      const allItems = Object.values(newWeekSchedules).flatMap((w: any) => w.schedule || []);
+      const mergedSchedule = {
+        schedule: allItems,
+        strategy_notes: weekData.focus || "",
+        weeklyData: newWeekSchedules,
+      };
+      setSchedule(mergedSchedule);
+      savePipeline(goalPlan, mergedSchedule);
+
+      if (week >= 4) setStage(3);
     } catch (err: any) {
       alert("Erro: " + err.message);
     } finally {
@@ -409,7 +435,13 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
           break;
         }
         if (data.content) {
-          setProducedContent((prev) => ({ ...prev, [item.id]: data.content }));
+          const richItem = {
+            content: data.content,
+            style_notes: data.style_notes || "",
+            visual_prompt: data.visual_prompt || "",
+            visual_type: data.visual_type || "none",
+          };
+          setProducedContent((prev) => ({ ...prev, [item.id]: richItem }));
 
           // Add to content list for review
           engine.addContent({
@@ -423,6 +455,9 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             original_body: data.content,
             theme: item.theme,
             voice_version: engine.voiceProfile.version,
+            style_notes: data.style_notes,
+            visual_prompt: data.visual_prompt,
+            visual_type: data.visual_type,
           });
           produced++;
         }
@@ -512,7 +547,7 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
           message={loadingMessage || "AI trabalhando..."}
           sub={
             loadingMessage.includes("cronograma")
-              ? "Pesquisando temas + montando pauta completa"
+              ? "Pesquisando temas + montando pauta da semana"
               : loadingMessage.includes("Produzindo")
               ? "Escrevendo como o Eric para cada canal selecionado"
               : loadingMessage.includes("progresso")
@@ -612,12 +647,58 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             )}
           </div>
 
-          <button
-            onClick={handleBuildSchedule}
-            className="w-full px-5 py-3 bg-white text-[#0a0e17] rounded-lg text-sm font-semibold hover:bg-slate-200 transition"
-          >
-            🧠 Montar cronograma do mês
-          </button>
+          {/* Week-by-week schedule builder */}
+          <div className="bg-[#111827] border border-[#1e293b] rounded-xl p-4 mb-3">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+              📅 Montar cronograma — semana a semana
+            </h3>
+            <p className="text-[11px] text-slate-500 mb-4">
+              Cada semana é gerada separadamente para não estourar tokens. A pesquisa de temas é feita só na Semana 1 e reutilizada nas demais.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+              {([1, 2, 3, 4] as const).map((w) => {
+                const done = currentWeek >= w;
+                const isNext = currentWeek === w - 1;
+                return (
+                  <button
+                    key={w}
+                    onClick={() => handleBuildWeek(w)}
+                    disabled={!isNext && !done}
+                    className={`flex flex-col items-center gap-1 p-3 rounded-xl border text-xs font-medium transition ${
+                      done
+                        ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                        : isNext
+                        ? "bg-white text-[#0a0e17] border-white hover:bg-slate-200"
+                        : "bg-[#0a0e17] border-[#1e293b] text-slate-600 cursor-not-allowed"
+                    }`}
+                  >
+                    <span className="text-base">{done ? "✓" : w === 1 ? "🔍" : "📋"}</span>
+                    <span>Semana {w}</span>
+                    {weekSchedules[w] && (
+                      <span className="text-[10px] opacity-70">{(weekSchedules[w].schedule || []).length} posts</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {currentWeek > 0 && (
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] text-slate-500">
+                  {currentWeek < 4
+                    ? `${(schedule?.schedule || []).length} posts gerados — continue para a Semana ${currentWeek + 1}`
+                    : `✓ Cronograma completo — ${(schedule?.schedule || []).length} posts no mês`}
+                </p>
+                {currentWeek >= 1 && (
+                  <button
+                    onClick={() => setStage(3)}
+                    className="px-3 py-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-xs font-medium hover:bg-indigo-500/20 transition"
+                  >
+                    Revisar pauta →
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -714,8 +795,30 @@ function PipelineTab({ engine, onNavigate }: { engine: ReturnType<typeof useCont
             <div className="text-3xl mb-2">✅</div>
             <h2 className="text-lg font-semibold text-white mb-2">Conteúdo produzido!</h2>
             <p className="text-sm text-slate-300 mb-1">{approvedThemes.size} posts gerados e enviados pra revisão.</p>
-            <p className="text-xs text-slate-500">Revise, edite e aprove cada um. O que for aprovado entra na fila de publicação automática.</p>
+            <p className="text-xs text-slate-500">Cada post tem: texto, estilo de postagem e prompt visual para imagem/vídeo.</p>
           </div>
+
+          {/* Preview of produced items */}
+          {Object.entries(producedContent).length > 0 && (
+            <div className="mb-4 space-y-3">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Preview do que foi gerado</p>
+              {Object.entries(producedContent).slice(0, 3).map(([id, rich]: [string, any]) => (
+                <div key={id} className="bg-[#111827] border border-[#1e293b] rounded-xl p-4">
+                  <p className="text-xs text-slate-300 line-clamp-3 mb-2">{rich.content?.slice(0, 200)}…</p>
+                  {rich.style_notes && (
+                    <div className="text-[11px] text-blue-400/80 bg-blue-500/5 rounded-lg p-2 mb-2">
+                      <span className="font-semibold">🎨 Estilo:</span> {rich.style_notes}
+                    </div>
+                  )}
+                  {rich.visual_prompt && rich.visual_prompt !== "N/A" && (
+                    <div className="text-[11px] text-purple-400/80 bg-purple-500/5 rounded-lg p-2">
+                      <span className="font-semibold">🖼 Visual:</span> {rich.visual_prompt?.slice(0, 120)}…
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="flex flex-col gap-2">
             <button onClick={() => onNavigate("review")} className="w-full px-5 py-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-lg text-sm font-semibold hover:bg-amber-500/20 transition">
@@ -1713,6 +1816,32 @@ function ReviewTab({
                 <div className="whitespace-pre-wrap text-slate-300 text-sm leading-relaxed p-4 bg-[#0a0e17] rounded-lg border border-[#1e293b]">
                   {item.body}
                 </div>
+
+                {/* Rich output: style notes + visual prompt */}
+                {(item.style_notes || item.visual_prompt) && (
+                  <div className="mt-2 space-y-1.5">
+                    {item.style_notes && (
+                      <div className="text-[11px] text-blue-400/80 bg-blue-500/5 border border-blue-500/10 rounded-lg p-2.5">
+                        <span className="font-semibold">🎨 Estilo de postagem:</span> {item.style_notes}
+                      </div>
+                    )}
+                    {item.visual_prompt && item.visual_prompt !== "N/A" && (
+                      <div className="text-[11px] text-purple-400/80 bg-purple-500/5 border border-purple-500/10 rounded-lg p-2.5">
+                        <span className="font-semibold">
+                          {item.visual_type === "video" ? "🎬 Prompt de vídeo:" : item.visual_type === "carousel" ? "🎠 Prompt de carrossel:" : "🖼 Prompt de imagem:"}
+                        </span>{" "}
+                        {item.visual_prompt}
+                        <button
+                          onClick={() => navigator.clipboard.writeText(item.visual_prompt || "")}
+                          className="ml-2 text-purple-400 hover:text-purple-200 underline"
+                        >
+                          copiar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex gap-2 mt-3">
                   <button
                     onClick={() => startEdit(item)}
@@ -1822,6 +1951,13 @@ function VoiceTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
   const [newRule, setNewRule] = useState("");
   const [newAnti, setNewAnti] = useState("");
   const [newVocab, setNewVocab] = useState("");
+  const [showSkillForm, setShowSkillForm] = useState(false);
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
+  const [skillForm, setSkillForm] = useState({
+    name: "",
+    category: "copy" as AgentSkill["category"],
+    instructions: "",
+  });
 
   const vp = engine.voiceProfile;
 
@@ -1878,6 +2014,160 @@ function VoiceTab({ engine }: { engine: ReturnType<typeof useContentEngine> }) {
               <p className="text-slate-300 text-xs leading-relaxed">{e.text?.slice(0, 250)}...</p>
             </div>
           ))
+        )}
+      </Section>
+
+      {/* Agent Skills */}
+      <Section
+        title="🧠 Habilidades do Agente"
+        subtitle="Skills que o agente aplica ao criar e formatar conteúdo (copy, design, storytelling, etc.)"
+      >
+        {(vp.skills || []).length === 0 && !showSkillForm && (
+          <p className="text-slate-600 text-sm mb-3">Nenhuma skill adicionada. Adicione para enriquecer o agente.</p>
+        )}
+
+        {/* Skill cards */}
+        <div className="space-y-2 mb-3">
+          {(vp.skills || []).map((skill) => (
+            <div key={skill.id} className="bg-[#0a0e17] border border-[#1e293b] rounded-xl p-3">
+              {editingSkillId === skill.id ? (
+                <div className="space-y-2">
+                  <input
+                    className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500"
+                    value={skillForm.name}
+                    onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
+                    placeholder="Nome da skill"
+                  />
+                  <select
+                    className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500"
+                    value={skillForm.category}
+                    onChange={(e) => setSkillForm((f) => ({ ...f, category: e.target.value as AgentSkill["category"] }))}
+                  >
+                    {(["copy", "design", "storytelling", "strategy", "seo", "custom"] as const).map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <textarea
+                    className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y min-h-[80px] focus:border-indigo-500"
+                    value={skillForm.instructions}
+                    onChange={(e) => setSkillForm((f) => ({ ...f, instructions: e.target.value }))}
+                    placeholder="Instruções detalhadas para o agente..."
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        engine.updateSkill(skill.id, skillForm);
+                        setEditingSkillId(null);
+                      }}
+                      className="px-3 py-1.5 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-lg text-xs hover:bg-indigo-500/20 transition"
+                    >
+                      Salvar
+                    </button>
+                    <button onClick={() => setEditingSkillId(null)} className="px-3 py-1.5 text-slate-500 text-xs hover:text-white transition">
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 uppercase">
+                      {skill.category}
+                    </span>
+                    <span className="text-xs font-semibold text-white">{skill.name}</span>
+                    <div className="ml-auto flex gap-2">
+                      <button
+                        onClick={() => { setSkillForm({ name: skill.name, category: skill.category, instructions: skill.instructions }); setEditingSkillId(skill.id); }}
+                        className="text-slate-500 hover:text-white text-[11px] transition"
+                      >
+                        ✎
+                      </button>
+                      <button onClick={() => engine.removeSkill(skill.id)} className="text-slate-600 hover:text-red-400 text-[11px] transition">
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">{skill.instructions.slice(0, 160)}{skill.instructions.length > 160 ? "…" : ""}</p>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Add skill form */}
+        {showSkillForm && !editingSkillId ? (
+          <div className="bg-[#0a0e17] border border-indigo-500/20 rounded-xl p-3 space-y-2">
+            <p className="text-xs font-semibold text-indigo-400 mb-2">Nova habilidade</p>
+            <input
+              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500 placeholder-slate-600"
+              value={skillForm.name}
+              onChange={(e) => setSkillForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="Nome (ex: Copywriter AIDA, Designer Visual, Storyteller)"
+            />
+            <select
+              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs focus:border-indigo-500"
+              value={skillForm.category}
+              onChange={(e) => setSkillForm((f) => ({ ...f, category: e.target.value as AgentSkill["category"] }))}
+            >
+              {(["copy", "design", "storytelling", "strategy", "seo", "custom"] as const).map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <textarea
+              className="w-full p-2 bg-[#111827] border border-[#1e293b] rounded-lg text-slate-200 text-xs resize-y min-h-[100px] focus:border-indigo-500 placeholder-slate-600"
+              value={skillForm.instructions}
+              onChange={(e) => setSkillForm((f) => ({ ...f, instructions: e.target.value }))}
+              placeholder={`Instruções detalhadas para o agente usar essa habilidade.\n\nEx para Design: "Sempre especifique paleta de cores dark (azul marinho #0A1628, dourado #C9A84C). Composição minimalista. Tipografia Bold para headlines. Sem stock photos genéricos — prefira abstrações geométricas."`}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!skillForm.name.trim() || !skillForm.instructions.trim()) return;
+                  engine.addSkill({ id: Date.now().toString(), ...skillForm });
+                  setSkillForm({ name: "", category: "copy", instructions: "" });
+                  setShowSkillForm(false);
+                }}
+                className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500 transition"
+              >
+                Adicionar skill
+              </button>
+              <button onClick={() => setShowSkillForm(false)} className="px-3 py-1.5 text-slate-500 text-xs hover:text-white transition">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        ) : (
+          !editingSkillId && (
+            <button
+              onClick={() => { setSkillForm({ name: "", category: "copy", instructions: "" }); setShowSkillForm(true); }}
+              className="flex items-center gap-2 px-3 py-2 bg-[#111827] border border-dashed border-[#334155] rounded-lg text-xs text-slate-500 hover:text-white hover:border-[#475569] transition w-full"
+            >
+              + Adicionar habilidade
+            </button>
+          )
+        )}
+
+        {/* Presets */}
+        {!showSkillForm && !editingSkillId && (vp.skills || []).length === 0 && (
+          <div className="mt-3">
+            <p className="text-[11px] text-slate-600 mb-2">Ou adicione um preset:</p>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { name: "Copywriter AIDA", category: "copy" as const, instructions: "Use o framework AIDA (Atenção, Interesse, Desejo, Ação) para estruturar os posts. Atenção: hook forte na primeira linha. Interesse: dados ou história que mantém engajamento. Desejo: mostre benefício ou transformação. Ação: CTA sutil, nunca genérico. Varie a abertura: pergunta provocativa, dado surpreendente, afirmação contraintuitiva ou mini-história." },
+                { name: "Designer Visual", category: "design" as const, instructions: "Ao criar prompts de imagem: prefira paleta dark com tons de azul marinho e dourado. Composição minimalista com foco no sujeito. Tipografia bold para headlines quando aplicável. Evite stock photos genéricos — prefira ambientes modernos, abstrações geométricas ou cenas de trabalho realistas. Estilo editorial de tech/finance." },
+                { name: "Storyteller", category: "storytelling" as const, instructions: "Estruture o conteúdo como uma mini-história com arco narrativo: situação → problema → virada → resolução → aprendizado. Use detalhes específicos e concretos (números, datas, nomes de ferramentas). A experiência pessoal do Eric (exit, fintech, AI ops) serve como credencial, não como vaidade. Final com insight transferível para o leitor." },
+                { name: "SEO LinkedIn", category: "seo" as const, instructions: "Para LinkedIn: use termos que o público de tech/fintech procura (AI, automação, fintech, crédito, investimentos alternativos, precatórios). Primeiras 2 linhas são cruciais para o preview. Quebre em parágrafos curtos (2-3 linhas max) para facilitar leitura mobile. Hashtags no final: máx 3, específicas e com volume real (ex: #fintech #inteligenciaartificial #empreendedorismo)." },
+              ].map((preset) => (
+                <button
+                  key={preset.name}
+                  onClick={() => engine.addSkill({ id: Date.now().toString(), ...preset })}
+                  className="px-3 py-1.5 bg-[#111827] border border-[#1e293b] rounded-lg text-[11px] text-slate-400 hover:text-white hover:border-indigo-500/40 transition"
+                >
+                  + {preset.name}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </Section>
 

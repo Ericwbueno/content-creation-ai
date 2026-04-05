@@ -1,4 +1,11 @@
 // Types
+export interface AgentSkill {
+  id: string;
+  name: string;
+  category: "design" | "copy" | "storytelling" | "strategy" | "seo" | "custom";
+  instructions: string;
+}
+
 export interface VoiceProfile {
   id?: string;
   rules: string[];
@@ -6,6 +13,7 @@ export interface VoiceProfile {
   vocabulary: string[];
   examples: Array<{ text: string; rating: number; date: string; channel?: string }>;
   version: number;
+  skills?: AgentSkill[];
 }
 
 export interface Goal {
@@ -98,6 +106,14 @@ Expressões e palavras que o Eric usa naturalmente: ${voiceProfile.vocabulary.jo
     prompt += `\n\n## EXEMPLOS DE REFERÊNCIA (posts aprovados com nota alta)
 Use estes como referência de tom, estrutura e estilo:
 ${goldExamples.map((e) => `---\n${e.text}\n---`).join("\n")}`;
+  }
+
+  // Agent skills
+  if (voiceProfile.skills?.length) {
+    prompt += `\n\n## HABILIDADES ESPECÍFICAS DO AGENTE`;
+    for (const skill of voiceProfile.skills) {
+      prompt += `\n\n### ${skill.name.toUpperCase()} (${skill.category})\n${skill.instructions}`;
+    }
   }
 
   // Active goal context

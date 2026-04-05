@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createBrowserClient } from "@/lib/supabase";
-import type { VoiceProfile, Goal } from "@/lib/voice-engine";
+import type { VoiceProfile, Goal, AgentSkill } from "@/lib/voice-engine";
 import type { ContentItem, Theme } from "@/lib/engine-types";
 import {
   isBrowserSupabaseConfigured,
@@ -17,12 +17,15 @@ import {
 
 export type { ContentItem, Theme } from "@/lib/engine-types";
 
+export type { AgentSkill } from "@/lib/voice-engine";
+
 const DEFAULT_VOICE: VoiceProfile = {
   rules: [],
   anti_patterns: [],
   vocabulary: [],
   examples: [],
   version: 0,
+  skills: [],
 };
 
 const LS = {
@@ -572,6 +575,37 @@ export function useContentEngine() {
     []
   );
 
+  // ── Skill management ──
+  const addSkill = useCallback(
+    (skill: AgentSkill) => {
+      setVoiceProfile((vp) => ({
+        ...vp,
+        skills: [...(vp.skills || []), skill],
+      }));
+    },
+    [setVoiceProfile]
+  );
+
+  const updateSkill = useCallback(
+    (id: string, patch: Partial<AgentSkill>) => {
+      setVoiceProfile((vp) => ({
+        ...vp,
+        skills: (vp.skills || []).map((s) => (s.id === id ? { ...s, ...patch } : s)),
+      }));
+    },
+    [setVoiceProfile]
+  );
+
+  const removeSkill = useCallback(
+    (id: string) => {
+      setVoiceProfile((vp) => ({
+        ...vp,
+        skills: (vp.skills || []).filter((s) => s.id !== id),
+      }));
+    },
+    [setVoiceProfile]
+  );
+
   return {
     loaded: loadedAll,
     persistence: useCloud ? ("supabase" as const) : ("local" as const),
@@ -593,6 +627,9 @@ export function useContentEngine() {
     addGoldExample,
     resetVoice,
     setVoiceProfile,
+    addSkill,
+    updateSkill,
+    removeSkill,
     addGoal,
     toggleGoal,
     removeGoal,

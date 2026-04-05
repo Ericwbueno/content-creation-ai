@@ -16,6 +16,10 @@ export interface ContentItem {
   rating?: number;
   feedback_note?: string;
   voice_version?: number;
+  // Rich output fields
+  style_notes?: string;
+  visual_prompt?: string;
+  visual_type?: "image" | "video" | "carousel" | "none";
 }
 
 export interface Theme {
